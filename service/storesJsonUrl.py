@@ -7,13 +7,20 @@ def job_that_runs_every_hour():
 
 fileType = ["StoresFull", "Price", "Promo", "PriceFull", "PromoFull"]
 
+def time_for_kingStore(timeNow):
+    now = datetime.datetime.now()
+    urls = []
+    for hour in range(24):
+        time = now.replace(hour=hour, minute=24, second=0, microsecond=0)
+        urls.append(time.strftime("%Y%m%d%H%M"))
+    return urls
 
 kingStore  = {
     "Url": "https://kingstore.binaprojects.com/Download.aspx?FileNm=",
     "WFileType": fileType,
     "ChainId":7290058108879,
     "StoreId": ["001","002","003","005","006","007","008","009","010","012","013","014","015","016","017","018","019","027","028","031","050","200","334","335","336","337","338","339"],
-    "WDate": job_that_runs_every_hour(),
+    "WDate": time_for_kingStore(datetime.date.today()),
     "siteType": "original"
 }
 
@@ -81,9 +88,32 @@ carrefour = {
     "siteType": "mega"
 }
 
+
+
 stores = [kingStore, mayaanStore, goodPharm, dorAlon, tivTaam, victory, zolvebegadol, carrefour]
 
-if __name__ == "__main__":
-    print(job_that_runs_every_hour())
 
+def makeUrlOriginal(store):
+    for storeId in store["StoreId"]:
+        for fileType in store["WFileType"]:
+            for timestamp in store["WDate"]:
+                urls = store["Url"] + fileType + str(store["ChainId"]) + "-" + storeId + "-" + timestamp + ".gz"
+                print(urls)
+
+def makeUrlMega(store):
+    for storeId in store["StoreId"]:
+        urls = store["Url"] + store["WFileType"] + store["chainId"] + "-" + storeId + "-" + store["WDate"] + ".json"
+
+def makeUrlOne(store):
+    for storeId in store["StoreId"]:
+        urls = store["Url"] + store["WFileType"] + store["chainId"] + "-" + storeId + "-" + store["WDate"] + ".json"
+
+def makeUrlCeberus(store):
+    for storeId in store["StoreId"]:
+        urls = store["Url"] + store["WFileType"] + store["chainId"] + "-" + storeId + "-" + store["WDate"] + ".json"
+
+
+if __name__ == "__main__":
+    
+    makeUrlOriginal(kingStore)
 
