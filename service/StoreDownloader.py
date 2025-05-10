@@ -116,4 +116,58 @@ class StoreDownloader(ABC):
                      print(f"  Error removing partially saved file {filename}: {e_remove}")
             return None # Indicate failure
 
+    def process_store(self):
+        """
+        Main method to process all downloads for the configured store.
+        It generates URLs, downloads files, extracts them, and counts successes/failures.
+        """
+        print(f"\nProcessing Store: {self.config.get('ChainId', 'Unknown Chain ID')}")
+        # Reset counters for this processing run
+        self.success_count = 0
+        self.failure_count = 0
+
+        # This will be implemented by subclasses to provide specific URLs
+        urls_to_process = self._generate_urls()
+
+        if not urls_to_process:
+            print("  No URLs generated for this store. Skipping.")
+            return
+
+        print(f"  Generated {len(urls_to_process)} URLs to process.")
+
+        for url_info in urls_to_process:
+            # url_info is expected to be a dictionary, e.g.,
+            # {'url': 'http://example.com/file.gz', 'store_id': '001', 'file_type': 'Price', 'timestamp': '202301010000'}
+            url = url_info.get('url')
+            if not url:
+                print("  Skipping entry with no URL in url_info.")
+                self.failure_count +=1
+                continue
+
+            filename_base = (
+                f"{self.config.get('ChainId', 'NA')}-"
+                f"{url_info.get('store_id', 'NA')}-"
+                f"{url_info.get('file_type', 'NA')}-"
+                f"{url_info.get('timestamp', 'NA')}"
+            )
+
+            print(f"\n  Processing URL: {url}")
+            compressed_filepath = self._request_and_save_file(url, filename_base)
+
+            if compressed_filepath:
+                extracted_xml_path = self._extract_file(compressed_filepath)
+                if extracted_xml_path:
+                    print(f"    Successfully processed and extracted: {os.path.basename(extracted_xml_path)}")
+                    self.success_count += 1
+                else:
+                    print(f"    Extraction failed for file from URL: {url}")
+                    self.failure_count += 1
+            else:
+                print(f"    Download failed for URL: {url}")
+                self.failure_count += 1
+
+        print(f"\nFinished processing Store: {self.config.get('ChainId', 'Unknown Chain ID')}")
+        print(f"  Successful operations: {self.success_count}")
+        print(f"  Failed operations: {self.failure_count}")
+        print(f"  Total attempts: {self.success_count + self.failure_count}")
 
