@@ -21,7 +21,15 @@ class StoreDownloader(ABC):
         pass
     
     def _ensure_download_dir(self):
-        download_dir = os.path.join("service", "downloads")
+        # Get the directory of the current file (base.py)
+        current_file_dir = os.path.dirname(__file__)
+        # Get the parent directory (service/downloaders)
+        parent_dir = os.path.dirname(current_file_dir)
+        # Get the project root directory (shop-saver)
+        project_root = os.path.dirname(parent_dir)
+        # Construct the download directory path relative to the project root
+        download_dir = os.path.join(project_root, "service", "downloads")
+
         if not os.path.exists(download_dir):
             os.makedirs(download_dir)
             print("created directory for downloaded xml files")
