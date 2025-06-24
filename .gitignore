@@ -1,4 +1,5 @@
 # Downloads directory
+backend/target/
 service/downloads/
 service/downloads/*
 
@@ -34,4 +35,5 @@ wheels/
 
 # OS
 .DS_Store
-Thumbs.db 
+service/Dockerfile
+service/cronjob
