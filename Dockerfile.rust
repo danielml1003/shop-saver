@@ -1,0 +1,40 @@
+# Dockerfile for Rust backend
+FROM rustlang/rust:nightly as builder
+
+WORKDIR /app
+
+# Copy Cargo files
+COPY backend/Cargo.toml backend/Cargo.lock* ./
+
+# Create src directory and copy source code
+COPY backend/src ./src
+
+# Build the application
+RUN cargo build --release
+
+# Runtime stage
+FROM debian:bookworm-slim
+
+WORKDIR /app
+
+# Install necessary runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the binary from builder stage
+COPY --from=builder /app/target/release/backend /app/backend
+
+# Create downloads directory for watching XML files
+RUN mkdir -p /app/downloads
+
+# Expose port if needed (add this if you plan to add HTTP API later)
+# EXPOSE 8080
+
+# Set environment variables
+ENV WATCH_DIRECTORY=/app/downloads
+ENV RUST_LOG=info
+
+# Command to run the backend
+CMD ["./backend"]

@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    container_name: shop-saver-db
+    environment:
+      POSTGRES_DB: shop_saver
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Python Service (Store Downloader)
+  python-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    container_name: shop-saver-python
+    volumes:
+      - shared_downloads:/app/downloads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
+  # Rust Backend (XML Processor)
+  rust-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.rust
+    container_name: shop-saver-backend
+    volumes:
+      - shared_downloads:/app/downloads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:password@postgres:5432/shop_saver
+      WATCH_DIRECTORY: /app/downloads
+      RUST_LOG: info
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  shared_downloads:

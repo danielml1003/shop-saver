@@ -1,0 +1,20 @@
+# Dockerfile for Python service
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy requirements and install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the service code
+COPY service/ ./service/
+
+# Create downloads directory
+RUN mkdir -p /app/downloads
+
+# Set the working directory to service
+WORKDIR /app/service
+
+# Command to run the service
+CMD ["python", "main.py"]
