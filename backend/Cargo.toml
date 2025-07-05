@@ -17,3 +17,8 @@ anyhow = "1.0"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 env_logger = "0.10"
 dotenv = "0.15"
+# Web server dependencies
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+serde_json = "1.0"
