@@ -1,8 +1,9 @@
 use sqlx::{PgPool, Row};
-use crate::models::{LocationQuery, PriceComparisonRequest, PriceComparisonResponse, StoreInfo, ItemPrice, StoreComparison};
+use crate::models::{PriceComparisonRequest, PriceComparisonResponse, StoreInfo, ItemPrice, StoreComparison};
 use anyhow::Result;
 use std::collections::HashSet;
 
+#[derive(Clone)]
 pub struct DatabaseManager {
     pub pool: PgPool,
 }
@@ -74,8 +75,7 @@ impl DatabaseManager {
     }
 
     pub async fn get_nearby_stores(&self, lat: f64, lon: f64, radius_km: f64) -> Result<Vec<StoreInfo>> {
-        let stores = sqlx::query_as!(
-            StoreInfo,
+        let rows = sqlx::query(
             r#"
             SELECT 
                 id, chain_id, sub_chain_id, store_id, 
@@ -94,12 +94,29 @@ impl DatabaseManager {
                   * cos(radians(longitude) - radians($2)) 
                   + sin(radians($1)) * sin(radians(latitude))) <= $3
             ORDER BY distance_km
-            "#,
-            lat, lon, radius_km
+            "#
         )
+        .bind(lat)
+        .bind(lon)
+        .bind(radius_km)
         .fetch_all(&self.pool)
         .await?;
-        
+
+        let stores = rows
+            .into_iter()
+            .map(|row| StoreInfo {
+                id: row.get("id"),
+                chain_id: row.get("chain_id"),
+                sub_chain_id: row.get("sub_chain_id"),
+                store_id: row.get("store_id"),
+                address: row.get("address"),
+                city: row.get("city"),
+                latitude: row.get("latitude"),
+                longitude: row.get("longitude"),
+                distance_km: row.get("distance_km"),
+            })
+            .collect();
+
         Ok(stores)
     }
 
@@ -135,7 +152,7 @@ impl DatabaseManager {
             items.push(ItemPrice {
                 item_code: row.get("item_code"),
                 item_name: row.get("item_name"),
-                price: row.get::<sqlx::types::BigDecimal, _>("price").to_string().parse().unwrap_or(0.0),
+                price: row.get::<f64, _>("price"),
                 unit_of_measure: row.get("unit_of_measure"),
                 manufacturer_name: row.get("manufacturer_name"),
             });
@@ -195,7 +212,7 @@ impl DatabaseManager {
 }
 
 impl DatabaseManager {
-    fn parse_datetime(&self, datetime_str: &str) -> Result<chrono::NaiveDateTime> {
+    pub(crate) fn parse_datetime(&self, datetime_str: &str) -> Result<chrono::NaiveDateTime> {
         chrono::NaiveDateTime::parse_from_str(datetime_str, "%Y-%m-%d %H:%M:%S")
             .map_err(|e| anyhow::anyhow!("Failed to parse datetime '{}': {}", datetime_str, e))
     }

@@ -2,7 +2,8 @@ use anyhow::Result;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{path::Path, sync::mpsc, thread, time::Duration};
 use tokio::fs;
-use tracing::{error, info, warn};
+use tracing::{error, info};
+use sqlx::Row;
 
 use crate::database::DatabaseManager;
 use crate::models::{XmlRoot, Item};
@@ -76,6 +77,9 @@ impl XmlFileProcessor {
         
         let rt = tokio::runtime::Handle::current();
         
+        let db_clone = self.db_manager.clone();
+        let watch_dir = self.watch_directory.clone();
+
         thread::spawn(move || {
             loop {
                 match rx.recv_timeout(Duration::from_secs(1)) {
@@ -86,9 +90,21 @@ impl XmlFileProcessor {
                                     info!("New/modified XML file detected: {:?}", path);
                                     
                                     let path_clone = path.clone();
+                                    let db_for_task = db_clone.clone();
+                                    let dir_for_task = watch_dir.clone();
                                     rt.spawn(async move {
                                         tokio::time::sleep(Duration::from_secs(2)).await;
                                         info!("File ready for processing: {:?}", path_clone);
+                                        if let Ok(metadata) = tokio::fs::metadata(&path_clone).await {
+                                            if metadata.is_file() {
+                                                if let Err(e) = (XmlFileProcessor { db_manager: db_for_task, watch_directory: dir_for_task })
+                                                    .process_xml_file(&path_clone)
+                                                    .await
+                                                {
+                                                    error!("Error processing new file {:?}: {}", path_clone, e);
+                                                }
+                                            }
+                                        }
                                     });
                                 }
                             }

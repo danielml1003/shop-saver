@@ -5,6 +5,7 @@ import { CssBaseline, Box } from '@mui/material';
 import Header from './components/Header';
 import ItemsPage from './pages/ItemsPage';
 import StoresPage from './pages/StoresPage';
+import ComparePage from './pages/ComparePage';
 
 // Create a theme with RTL support for Hebrew
 const theme = createTheme({
@@ -53,6 +54,7 @@ function App() {
             <Routes>
               <Route path="/" element={<ItemsPage />} />
               <Route path="/stores" element={<StoresPage />} />
+              <Route path="/compare" element={<ComparePage />} />
             </Routes>
           </Box>
         </Box>

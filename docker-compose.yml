@@ -33,6 +33,7 @@ services:
         condition: service_healthy
     environment:
       - PYTHONUNBUFFERED=1
+      - DOWNLOAD_DIR=/app/downloads
     restart: unless-stopped
 
   # Rust Backend (XML Processor)
@@ -50,6 +51,8 @@ services:
       DATABASE_URL: postgresql://postgres:password@postgres:5432/shop_saver
       WATCH_DIRECTORY: /app/downloads
       RUST_LOG: info
+    ports:
+      - "3000:3000"
     restart: unless-stopped
 
 volumes:

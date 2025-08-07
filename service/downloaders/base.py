@@ -21,14 +21,16 @@ class StoreDownloader(ABC):
         pass
     
     def _ensure_download_dir(self):
-        # Get the directory of the current file (base.py)
-        current_file_dir = os.path.dirname(__file__)
-        # Get the parent directory (service/downloaders)
-        parent_dir = os.path.dirname(current_file_dir)
-        # Get the project root directory (shop-saver)
-        project_root = os.path.dirname(parent_dir)
-        # Construct the download directory path relative to the project root
-        download_dir = os.path.join(project_root, "service", "downloads")
+        # Prefer container-wide shared directory when provided
+        shared_dir = os.environ.get("DOWNLOAD_DIR") or os.environ.get("WATCH_DIRECTORY")
+        if shared_dir:
+            download_dir = shared_dir
+        else:
+            # Fallback to project relative path for local runs
+            current_file_dir = os.path.dirname(__file__)
+            parent_dir = os.path.dirname(current_file_dir)
+            project_root = os.path.dirname(parent_dir)
+            download_dir = os.path.join(project_root, "service", "downloads")
 
         if not os.path.exists(download_dir):
             os.makedirs(download_dir)
@@ -37,7 +39,7 @@ class StoreDownloader(ABC):
         return download_dir
     
     def _clean_old_files(self, filepath_without_extension):
-        extensions_to_check = ['.gz', '']
+        extensions_to_check = ['.gz', '.zip', '.xml', '']
         print("start cleaning gz extention files or incomplete files")
 
         for ext in extensions_to_check:

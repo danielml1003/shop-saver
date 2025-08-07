@@ -1,10 +1,17 @@
 import axios from 'axios';
-import { Store, Item, SearchFilters, ApiResponse } from '../types';
+import { Store, Item, SearchFilters, ApiResponse, UserLocation, PriceComparisonRequest, PriceComparisonResponse, BackendStoreInfo } from '../types';
 
 // For now, we'll create a mock API service since we need to create a backend API endpoint
 // In a real implementation, you'd connect directly to PostgreSQL or create an Express/FastAPI backend
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3000';
+
+const api = axios.create({
+  baseURL: API_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
 
 // Axios instance for future API calls
 // const api = axios.create({
@@ -114,11 +121,28 @@ const mockItems: Item[] = [
 ];
 
 export const apiService = {
+  // Backend: get nearby stores by location
+  getNearbyStores: async (location: UserLocation): Promise<BackendStoreInfo[]> => {
+    const params = new URLSearchParams({
+      latitude: String(location.latitude),
+      longitude: String(location.longitude),
+    });
+    if (location.radius_km != null) {
+      params.set('radius_km', String(location.radius_km));
+    }
+    const res = await api.get(`/api/stores/nearby?${params.toString()}`);
+    return res.data as BackendStoreInfo[];
+  },
+
+  // Backend: compare prices across nearby stores
+  comparePrices: async (payload: PriceComparisonRequest): Promise<PriceComparisonResponse> => {
+    const res = await api.post('/api/compare-prices', payload);
+    return res.data as PriceComparisonResponse;
+  },
   // Get all stores
   getStores: async (): Promise<Store[]> => {
     try {
-      // In production, replace with: const response = await api.get('/stores');
-      // return response.data;
+      // Placeholder: replace later with real endpoint when available
       return mockStores;
     } catch (error) {
       console.error('Error fetching stores:', error);

@@ -54,3 +54,49 @@ export interface ApiResponse<T> {
   page: number;
   limit: number;
 }
+
+// Backend API types for price comparison flow
+export interface UserLocation {
+  latitude: number;
+  longitude: number;
+  radius_km?: number;
+}
+
+export interface PriceComparisonRequest {
+  user_location: UserLocation;
+  grocery_list: string[];
+}
+
+export interface BackendStoreInfo {
+  id: number;
+  chain_id: string;
+  sub_chain_id: number;
+  store_id: number;
+  address?: string;
+  city?: string;
+  latitude?: number;
+  longitude?: number;
+  distance_km?: number;
+}
+
+export interface ComparisonItemPrice {
+  item_code: string;
+  item_name: string;
+  price: number;
+  unit_of_measure?: string;
+  manufacturer_name?: string;
+}
+
+export interface StoreComparison {
+  store: BackendStoreInfo;
+  items: ComparisonItemPrice[];
+  total_price: number;
+  items_found: number;
+  items_missing: string[];
+}
+
+export interface PriceComparisonResponse {
+  stores: StoreComparison[];
+  best_store?: StoreComparison;
+  requested_items: string[];
+}

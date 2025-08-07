@@ -10,6 +10,7 @@ import {
   Store as StoreIcon,
   Search as SearchIcon,
   ShoppingCart as ShoppingCartIcon,
+    CompareArrows as CompareIcon,
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 
@@ -47,6 +48,14 @@ const Header: React.FC = () => {
             startIcon={<StoreIcon />}
           >
             חנויות
+          </Button>
+
+          <Button
+            color={isActive('/compare') ? 'secondary' : 'inherit'}
+            onClick={() => navigate('/compare')}
+            startIcon={<CompareIcon />}
+          >
+            השוואה
           </Button>
         </Box>
       </Toolbar>
