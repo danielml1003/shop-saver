@@ -1,9 +1,4 @@
-# Shop‑Saver Project Guide
-
-## Overview
-
-Shop‑Saver is a two‑part application designed to help consumers find and compare grocery prices across multiple retail chains in Israel.  
-The **service** component (Python) downloads and processes raw price lists from retailer data feeds, while the **frontend** (TypeScript/React) provides an interactive web interface for searching items, browsing stores and performing basket‑price comparisons.
+component (Python) downloads and processes raw price lists from retailer data feeds, while the **frontend** (TypeScript/React) provides an interactive web interface for searching items, browsing stores and performing basket‑price comparisons.
 
 The project is organised into two top‑level directories:
 
