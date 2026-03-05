@@ -1,4 +1,5 @@
 from .base import StoreDownloader
+import datetime
 import os
 # --- Concrete Subclasses ---
 
@@ -33,21 +34,36 @@ class OriginalStoreDownloader(StoreDownloader):
             print(f"  Warning: 'WFileType' missing or empty in config for OriginalStoreDownloader, ChainId {chain_id}.")
 
 
-        for store_id in store_ids:
-            for file_type in file_types:
-                for timestamp in timestamps:
-                    # Ensure timestamp is a string for URL construction
-                    ts_str = str(timestamp) 
-                    
-                    # Construct the URL
-                    url = f"{base_url}{file_type}{chain_id}-{store_id}-{ts_str}.gz"
-                    
-                    urls_to_process.append({
-                        'url': url,
-                        'store_id': store_id,
-                        'file_type': file_type,
-                        'timestamp': ts_str
-                    })
+        seen_urls = set()
+
+        for file_type in file_types:
+            for timestamp in timestamps:
+                ts_str = str(timestamp)
+
+                if file_type.startswith("Stores"):
+                    # Chain-level file: use the known upload hours from WStoresFullHours config.
+                    stores_hours = store_cfg.get("WStoresFullHours", [])
+                    today = datetime.datetime.now().strftime("%Y%m%d")
+                    for hour in stores_hours:
+                        day_ts = f"{today}{hour:02d}10"
+                        url = f"{base_url}{file_type}{chain_id}-000-{day_ts}.gz"
+                        if url not in seen_urls:
+                            seen_urls.add(url)
+                            urls_to_process.append({
+                                'url': url,
+                                'store_id': '000',
+                                'file_type': file_type,
+                                'timestamp': day_ts
+                            })
+                else:
+                    for store_id in store_ids:
+                        url = f"{base_url}{file_type}{chain_id}-{store_id}-{ts_str}.gz"
+                        urls_to_process.append({
+                            'url': url,
+                            'store_id': store_id,
+                            'file_type': file_type,
+                            'timestamp': ts_str
+                        })
         
         if not urls_to_process and (store_ids and file_types and timestamps): # Only print warning if inputs were present but still no URLs
             print(f"  Note: No URLs generated for OriginalStoreDownloader, ChainId {chain_id}, despite having config values. This might be expected if timestamp list was empty.")

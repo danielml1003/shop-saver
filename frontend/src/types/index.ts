@@ -63,8 +63,10 @@ export interface UserLocation {
 }
 
 export interface PriceComparisonRequest {
-  user_location: UserLocation;
+  user_location?: UserLocation;
   grocery_list: string[];
+  page?: number;
+  page_size?: number;
 }
 
 export interface BackendStoreInfo {
@@ -72,6 +74,7 @@ export interface BackendStoreInfo {
   chain_id: string;
   sub_chain_id: number;
   store_id: number;
+  store_name?: string;
   address?: string;
   city?: string;
   latitude?: number;
@@ -99,4 +102,6 @@ export interface PriceComparisonResponse {
   stores: StoreComparison[];
   best_store?: StoreComparison;
   requested_items: string[];
+  total_stores: number;
+  has_more: boolean;
 }

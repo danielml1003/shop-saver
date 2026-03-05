@@ -6,7 +6,7 @@ use tracing::{error, info};
 use sqlx::Row;
 
 use crate::database::DatabaseManager;
-use crate::models::{XmlRoot, Item};
+use crate::models::{XmlRoot, Item, StoresFullRoot};
 
 pub struct XmlFileProcessor {
     db_manager: DatabaseManager,
@@ -25,16 +25,34 @@ impl XmlFileProcessor {
         let file_path_str = file_path.to_string_lossy();
         info!("Processing XML file: {}", file_path_str);
 
+        let filename = file_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+
         let content = fs::read_to_string(file_path).await?;
-        
-        match serde_xml_rs::from_str::<XmlRoot>(&content) {
-            Ok(xml_data) => {
-                self.process_xml_data(xml_data, &file_path_str).await?;
-                info!("Successfully processed: {}", file_path_str);
+
+        if filename.contains("storesfull") || filename.contains("stores") {
+            match serde_xml_rs::from_str::<StoresFullRoot>(&content) {
+                Ok(stores_data) => {
+                    self.process_stores_full(stores_data).await?;
+                    info!("Successfully processed StoresFull: {}", file_path_str);
+                }
+                Err(e) => {
+                    error!("Failed to parse StoresFull XML {}: {}", file_path_str, e);
+                    return Err(anyhow::anyhow!("StoresFull XML parsing error: {}", e));
+                }
             }
-            Err(e) => {
-                error!("Failed to parse XML file {}: {}", file_path_str, e);
-                return Err(anyhow::anyhow!("XML parsing error: {}", e));
+        } else {
+            match serde_xml_rs::from_str::<XmlRoot>(&content) {
+                Ok(xml_data) => {
+                    self.process_xml_data(xml_data, &file_path_str).await?;
+                    info!("Successfully processed: {}", file_path_str);
+                }
+                Err(e) => {
+                    error!("Failed to parse XML file {}: {}", file_path_str, e);
+                    return Err(anyhow::anyhow!("XML parsing error: {}", e));
+                }
             }
         }
 
@@ -43,18 +61,59 @@ impl XmlFileProcessor {
 
     pub async fn scan_existing_files(&self) -> Result<()> {
         info!("Scanning existing XML files in: {}", self.watch_directory);
-        
+
         let mut dir = fs::read_dir(&self.watch_directory).await?;
-        
+        let mut skipped = 0usize;
+        let mut processed = 0usize;
+
         while let Some(entry) = dir.next_entry().await? {
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("xml") {
-                if let Err(e) = self.process_xml_file(&path).await {
-                    error!("Error processing existing file {:?}: {}", path, e);
+            if path.extension().and_then(|s| s.to_str()) != Some("xml") {
+                continue;
+            }
+
+            let filename = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            let file_size = entry.metadata().await.map(|m| m.len() as i64).unwrap_or(0);
+
+            // Skip promotional files — they have a different XML structure (Promotions, not Items)
+            // and we don't need promo data. Mark immediately so they're not re-checked.
+            let lower_fname = filename.to_lowercase();
+            if lower_fname.contains("promo") || lower_fname.starts_with("nullpromo") {
+                if let Err(e) = self.db_manager.mark_file_processed(&filename, file_size).await {
+                    error!("Error marking promo file as skipped {}: {}", filename, e);
                 }
+                skipped += 1;
+                continue;
+            }
+
+            // Skip files that were already processed with the same size
+            match self.db_manager.is_file_processed(&filename, file_size).await {
+                Ok(true) => { skipped += 1; continue; }
+                Ok(false) => {}
+                Err(e) => error!("Error checking processed status for {}: {}", filename, e),
+            }
+
+            match self.process_xml_file(&path).await {
+                Ok(_) => {
+                    processed += 1;
+                }
+                Err(e) => error!("Error processing existing file {:?}: {}", path, e),
+            }
+            // Mark as processed regardless of success or failure so we don't retry on restart.
+            // Promo/PromoFull files have a different XML format and will always fail — no sense retrying.
+            if let Err(e) = self.db_manager.mark_file_processed(&filename, file_size).await {
+                error!("Error marking file as processed {}: {}", filename, e);
             }
         }
-        
+
+        info!(
+            "Scan complete: {} files processed, {} already-done files skipped",
+            processed, skipped
+        );
         Ok(())
     }
 
@@ -97,11 +156,15 @@ impl XmlFileProcessor {
                                         info!("File ready for processing: {:?}", path_clone);
                                         if let Ok(metadata) = tokio::fs::metadata(&path_clone).await {
                                             if metadata.is_file() {
-                                                if let Err(e) = (XmlFileProcessor { db_manager: db_for_task, watch_directory: dir_for_task })
-                                                    .process_xml_file(&path_clone)
-                                                    .await
-                                                {
+                                                let processor = XmlFileProcessor { db_manager: db_for_task, watch_directory: dir_for_task };
+                                                if let Err(e) = processor.process_xml_file(&path_clone).await {
                                                     error!("Error processing new file {:?}: {}", path_clone, e);
+                                                } else {
+                                                    let filename = path_clone.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                                                    let file_size = metadata.len() as i64;
+                                                    if let Err(e) = processor.db_manager.mark_file_processed(&filename, file_size).await {
+                                                        error!("Error marking {} as processed: {}", filename, e);
+                                                    }
                                                 }
                                             }
                                         }
@@ -125,32 +188,54 @@ impl XmlFileProcessor {
         Ok(())
     }
 
-    async fn process_xml_data(&self, xml_data: XmlRoot, file_path: &str) -> Result<()> {
-        info!("Processing XML data from file: {}", file_path);
-        
-        let store_id = self.insert_or_get_store(&xml_data).await?;
-        
-        let mut processed_count = 0;
-        let mut skipped_count = 0;
-        
-        for item in xml_data.items.items {
-            match self.insert_item(store_id, &item, file_path).await {
-                Ok(_) => processed_count += 1,
-                Err(e) => {
-                    if e.to_string().contains("duplicate key") {
-                        skipped_count += 1;
-                    } else {
-                        error!("Error inserting item {}: {}", item.item_code, e);
-                    }
+    async fn process_stores_full(&self, stores_data: StoresFullRoot) -> Result<()> {
+        let chain_id = &stores_data.chain_id;
+        let mut updated = 0usize;
+
+        for sub_chain in &stores_data.sub_chains.sub_chains {
+            let sub_chain_id = sub_chain.sub_chain_id;
+            for store in &sub_chain.stores.stores {
+                match self
+                    .db_manager
+                    .update_store_from_stores_full(chain_id, sub_chain_id, store)
+                    .await
+                {
+                    Ok(_) => updated += 1,
+                    Err(e) => error!(
+                        "Error upserting store {} for chain {}: {}",
+                        store.store_id, chain_id, e
+                    ),
                 }
             }
         }
-        
+
+        info!("StoresFull: upserted {} stores for chain {}", updated, chain_id);
+        Ok(())
+    }
+
+    async fn process_xml_data(&self, xml_data: XmlRoot, file_path: &str) -> Result<()> {
+        info!("Processing XML data from file: {}", file_path);
+
+        let store_id = self.insert_or_get_store(&xml_data).await?;
+
+        let mut inserted = 0u64;
+        let mut skipped = 0u64;
+        let total = xml_data.items.items.len();
+
+        for item in xml_data.items.items {
+            match self.insert_item(store_id, &item, file_path).await {
+                Ok(rows_affected) => {
+                    if rows_affected > 0 { inserted += 1; } else { skipped += 1; }
+                }
+                Err(e) => error!("Error inserting item {}: {}", item.item_code, e),
+            }
+        }
+
         info!(
-            "Processed {} items, skipped {} duplicates from {}",
-            processed_count, skipped_count, file_path
+            "Inserted {}/{} items ({} already existed) from {}",
+            inserted, total, skipped, file_path
         );
-        
+
         Ok(())
     }
 
@@ -174,7 +259,7 @@ impl XmlFileProcessor {
         Ok(result.get("id"))
     }
 
-    async fn insert_item(&self, store_pk: i32, item: &Item, file_source: &str) -> Result<()> {
+    async fn insert_item(&self, store_pk: i32, item: &Item, file_source: &str) -> Result<u64> {
         let price_update_date = self.db_manager.parse_datetime(&item.price_update_date)?;
         
         let item_price: f64 = item.item_price.parse()
@@ -194,6 +279,7 @@ impl XmlFileProcessor {
                 price_update_date, file_source
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+            ON CONFLICT (store_pk, item_code, price_update_date) DO NOTHING
             "#,
         )
         .bind(store_pk)
@@ -215,8 +301,8 @@ impl XmlFileProcessor {
         .bind(price_update_date)
         .bind(file_source)
         .execute(&self.db_manager.pool)
-        .await?;
-
-        Ok(())
+        .await
+        .map(|r| r.rows_affected())
+        .map_err(anyhow::Error::from)
     }
 }

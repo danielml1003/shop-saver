@@ -1,79 +1,97 @@
 import requests
+import re
 import json
-import os # For os.path.basename in print statements
+import os
+import datetime
 from .base import StoreDownloader
 
+
 class MegaStoreDownloader(StoreDownloader):
+    LISTING_URL = "https://prices.carrefour.co.il/"
+
     def _generate_urls(self):
-        """
-        Generates initial request URLs for stores with 'mega' siteType.
-        These URLs point to an API returning JSON with the actual file path.
-        Example initial URL: {Url}{WFileType}{ChainId}-{StoreId}-{WDate}.json
-        """
-        urls_to_process = []
-        store_cfg = self.config
+        return []  # Not used — process_store is overridden
 
-        base_url = store_cfg.get("Url")
-        chain_id = store_cfg.get("ChainId")
+    def process_store(self):
+        chain_id = str(self.config["ChainId"])
+        self.success_count = 0
+        self.failure_count = 0
 
-        if not base_url or not chain_id:
-            print(f"  Warning: 'Url' or 'ChainId' missing in config for MegaStoreDownloader. Config: {store_cfg}")
-            return []
+        print(f"\nProcessing Store (Mega): {chain_id}")
 
-        timestamp = store_cfg.get("WDate")
-        if timestamp is None:
-            print(f"  Warning: 'WDate' missing for MegaStoreDownloader, ChainId {chain_id}.")
-            return []
-        
-        ts_str = str(timestamp)
-
-        store_ids = store_cfg.get("StoreId", [])
-        if not store_ids:
-            print(f"  Warning: 'StoreId' missing or empty for MegaStoreDownloader, ChainId {chain_id}.")
-
-        file_types = store_cfg.get("WFileType", [])
-        if not file_types:
-            print(f"  Warning: 'WFileType' missing or empty for MegaStoreDownloader, ChainId {chain_id}.")
-
-        for store_id in store_ids:
-            for file_type in file_types:
-                url = f"{base_url}{file_type}{chain_id}-{store_id}-{ts_str}.json"
-                urls_to_process.append({
-                    'url': url,
-                    'store_id': store_id,
-                    'file_type': file_type,
-                    'timestamp': ts_str
-                })
-        
-        if not urls_to_process and (store_ids and file_types and timestamp):
-             print(f"  Note: No URLs generated for MegaStoreDownloader, ChainId {chain_id}, despite config values.")
-
-        return urls_to_process
-
-    def _request_and_save_file(self, initial_url, filename_base):
-        """
-        Overrides base method to handle Mega's two-step download.
-        """
-        print(f"  MegaStoreDownloader: Attempting initial request to: {initial_url}")
+        # Fetch the listing page which embeds all available files in JS
         try:
-            response = requests.get(initial_url, timeout=30)
+            response = requests.get(self.LISTING_URL, timeout=30)
             response.raise_for_status()
-            data = response.json()
-            
-            if isinstance(data, list) and len(data) > 0 and "SPath" in data[0]:
-                actual_file_url = data[0]["SPath"]
-                print(f"    MegaStoreDownloader: Found actual file URL in SPath: {actual_file_url}")
-                return super()._request_and_save_file(actual_file_url, filename_base)
-            else:
-                print(f"    Error: MegaStoreDownloader - Invalid JSON response format from {initial_url}. Expected list with 'SPath'. Response: {data}")
-                return None
+            content = response.text
+        except requests.exceptions.RequestException as e:
+            print(f"  Error fetching Mega listing page: {e}")
+            return
 
-        except json.JSONDecodeError as e_json:
-            print(f"    Error: MegaStoreDownloader - Failed to parse JSON from {initial_url}. Error: {e_json}. Response: {response.text[:200]}")
-            return None
-        except requests.exceptions.RequestException as e_req:
-            print(f"    Error: MegaStoreDownloader - Initial request failed for {initial_url}. Error: {e_req}")
-            return None
-        except Exception as e_other:
-            print(f"    Error: MegaStoreDownloader - Unexpected error for {initial_url}. Error: {e_other}")
-            return None
+        # Parse the embedded JS: const path = 'YYYYMMDD'; const files = [...];
+        path_match = re.search(r"const path = '(\d{8})'", content)
+        files_match = re.search(r"const files = (\[.*?\]);", content, re.DOTALL)
+
+        if not path_match or not files_match:
+            print("  Error: Could not parse file listing from Mega page.")
+            return
+
+        date_path = path_match.group(1)
+        all_files = json.loads(files_match.group(1))
+
+        # Filter to files belonging to this chain modified in the last 2 hours
+        now = datetime.datetime.now()
+        cutoff = now - datetime.timedelta(hours=2)
+        allowed_prefixes = self.config.get("WFileTypePrefixes")
+
+        def _is_recent(file_info):
+            """Parse 'HH:MM DD-MM-YYYY' and check if within last 2 hours."""
+            try:
+                modified = datetime.datetime.strptime(file_info["modified"], "%H:%M %d-%m-%Y")
+                return modified >= cutoff
+            except (ValueError, KeyError):
+                return True  # Include if we can't parse the date
+
+        def _allowed_type(file_info):
+            if not allowed_prefixes:
+                return True
+            name = file_info["name"]
+            return any(name.startswith(p) for p in allowed_prefixes)
+
+        matching = [
+            f for f in all_files
+            if chain_id in f["name"] and _is_recent(f) and _allowed_type(f)
+        ]
+        print(f"  Found {len(matching)} recent files for chain {chain_id} (out of {len(all_files)} total)")
+
+        if not matching:
+            print("  No files found for this chain today.")
+            return
+
+        for file_info in matching:
+            filename = file_info["name"]
+            download_url = f"{self.LISTING_URL}{date_path}/{filename}"
+            local_path = os.path.join(self.download_dir, filename)
+
+            print(f"\n  Downloading: {filename}")
+            try:
+                dl = requests.get(download_url, timeout=60, stream=True)
+                dl.raise_for_status()
+                with open(local_path, "wb") as f:
+                    for chunk in dl.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                print(f"  Saved: {filename}")
+            except requests.exceptions.RequestException as e:
+                print(f"  Error downloading {filename}: {e}")
+                self.failure_count += 1
+                continue
+
+            extracted = self._extract_file(local_path)
+            if extracted:
+                print(f"  Extracted: {os.path.basename(extracted)}")
+                self.success_count += 1
+            else:
+                self.failure_count += 1
+
+        print(f"\nFinished processing Store (Mega): {chain_id}")
+        print(f"  Successful: {self.success_count}  Failed: {self.failure_count}")

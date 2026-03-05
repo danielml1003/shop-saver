@@ -14,6 +14,7 @@ import {
   Scale as WeightIcon,
 } from '@mui/icons-material';
 import { Item, Store } from '../types';
+import { useCart } from '../context/CartContext';
 
 interface ItemCardProps {
   item: Item;
@@ -21,6 +22,7 @@ interface ItemCardProps {
 }
 
 const ItemCard: React.FC<ItemCardProps> = ({ item, store }) => {
+  const { addItem, removeItem, contains } = useCart();
   const formatPrice = (price: number) => {
     return new Intl.NumberFormat('he-IL', {
       style: 'currency',
@@ -42,8 +44,15 @@ const ItemCard: React.FC<ItemCardProps> = ({ item, store }) => {
       : null;
   };
 
+  const inCart = contains(item.item_code);
+
   return (
-    <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <Card
+      onClick={() => (inCart ? removeItem(item.item_code) : addItem(item))}
+      sx={{ height: '100%', display: 'flex', flexDirection: 'column', cursor: 'pointer', '&:hover': { boxShadow: 6 } }}
+      aria-label={inCart ? 'נמצא בסל' : 'הוסף לסל'}
+      title={inCart ? 'נמצא בסל' : 'הוסף לסל'}
+    >
       <CardContent sx={{ flexGrow: 1 }}>
         {/* Product Name */}
         <Typography variant="h6" component="h3" gutterBottom>
@@ -107,6 +116,9 @@ const ItemCard: React.FC<ItemCardProps> = ({ item, store }) => {
 
         {/* Tags */}
         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 2 }}>
+          {inCart && (
+            <Chip label="בסל" size="small" color="primary" />
+          )}
           {item.is_weighted && (
             <Chip label="נמכר במשקל" size="small" variant="outlined" />
           )}

@@ -10,13 +10,14 @@ import {
   Store as StoreIcon,
   Search as SearchIcon,
   ShoppingCart as ShoppingCartIcon,
-    CompareArrows as CompareIcon,
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { useCart } from '../context/CartContext';
 
 const Header: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const cart = useCart();
 
   const isActive = (path: string) => location.pathname === path;
 
@@ -51,11 +52,11 @@ const Header: React.FC = () => {
           </Button>
 
           <Button
-            color={isActive('/compare') ? 'secondary' : 'inherit'}
-            onClick={() => navigate('/compare')}
-            startIcon={<CompareIcon />}
+            color={isActive('/cart') ? 'secondary' : 'inherit'}
+            onClick={() => navigate('/cart')}
+            startIcon={<ShoppingCartIcon />}
           >
-            השוואה
+            סל ({cart.items.length})
           </Button>
         </Box>
       </Toolbar>

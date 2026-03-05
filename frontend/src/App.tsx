@@ -6,6 +6,8 @@ import Header from './components/Header';
 import ItemsPage from './pages/ItemsPage';
 import StoresPage from './pages/StoresPage';
 import ComparePage from './pages/ComparePage';
+import CartPage from './pages/CartPage';
+import { CartProvider } from './context/CartContext';
 
 // Create a theme with RTL support for Hebrew
 const theme = createTheme({
@@ -48,16 +50,20 @@ function App() {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <Router>
-        <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-          <Header />
-          <Box component="main" sx={{ flexGrow: 1, backgroundColor: 'grey.50' }}>
-            <Routes>
-              <Route path="/" element={<ItemsPage />} />
-              <Route path="/stores" element={<StoresPage />} />
-              <Route path="/compare" element={<ComparePage />} />
-            </Routes>
+        <CartProvider>
+          <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+            <Header />
+            <Box component="main" sx={{ flexGrow: 1, backgroundColor: 'grey.50' }}>
+              <Routes>
+                <Route path="/" element={<ComparePage />} />
+                <Route path="/items" element={<ItemsPage />} />
+                <Route path="/stores" element={<StoresPage />} />
+                <Route path="/compare" element={<ComparePage />} />
+                <Route path="/cart" element={<CartPage />} />
+              </Routes>
+            </Box>
           </Box>
-        </Box>
+        </CartProvider>
       </Router>
     </ThemeProvider>
   );

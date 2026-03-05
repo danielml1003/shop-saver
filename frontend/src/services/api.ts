@@ -4,7 +4,7 @@ import { Store, Item, SearchFilters, ApiResponse, UserLocation, PriceComparisonR
 // For now, we'll create a mock API service since we need to create a backend API endpoint
 // In a real implementation, you'd connect directly to PostgreSQL or create an Express/FastAPI backend
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3000';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:3000';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -134,10 +134,16 @@ export const apiService = {
     return res.data as BackendStoreInfo[];
   },
 
-  // Backend: compare prices across nearby stores
+  // Backend: compare prices across stores (location optional, paginated)
   comparePrices: async (payload: PriceComparisonRequest): Promise<PriceComparisonResponse> => {
     const res = await api.post('/api/compare-prices', payload);
     return res.data as PriceComparisonResponse;
+  },
+
+  // Backend: autocomplete item names from DB
+  searchItemNames: async (q: string): Promise<string[]> => {
+    const res = await api.get('/api/items/search', { params: { q } });
+    return res.data as string[];
   },
   // Get all stores
   getStores: async (): Promise<Store[]> => {

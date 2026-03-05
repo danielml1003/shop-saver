@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 // XML Data Structures (for parsing price files)
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct XmlRoot {
-    #[serde(rename = "ChainId")]
+    #[serde(rename = "ChainId", alias = "ChainID")]
     pub chain_id: String,
-    #[serde(rename = "SubChainId")]
+    #[serde(rename = "SubChainId", alias = "SubChainID")]
     pub sub_chain_id: i32,
-    #[serde(rename = "StoreId")]
+    #[serde(rename = "StoreId", alias = "StoreID")]
     pub store_id: i32,
     #[serde(rename = "BikoretNo")]
     pub bikoret_no: Option<i32>,
@@ -23,19 +23,19 @@ pub struct Items {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Item {
-    #[serde(rename = "PriceUpdateDate")]
+    #[serde(rename = "PriceUpdateDate", alias = "PriceUpdateTime")]
     pub price_update_date: String,
     #[serde(rename = "ItemCode")]
     pub item_code: String,
     #[serde(rename = "ItemType")]
     pub item_type: i32,
-    #[serde(rename = "ItemNm")]
+    #[serde(rename = "ItemNm", alias = "ItemName")]
     pub item_name: String,
-    #[serde(rename = "ManufacturerName")]
+    #[serde(rename = "ManufacturerName", alias = "ManufactureName")]
     pub manufacturer_name: Option<String>,
     #[serde(rename = "ManufactureCountry")]
     pub manufacture_country: Option<String>,
-    #[serde(rename = "ManufacturerItemDescription")]
+    #[serde(rename = "ManufacturerItemDescription", alias = "ManufactureItemDescription")]
     pub manufacturer_item_description: Option<String>,
     #[serde(rename = "UnitQty")]
     pub unit_qty: Option<String>,
@@ -57,6 +57,49 @@ pub struct Item {
     pub item_status: Option<i32>,
 }
 
+// StoresFull XML Data Structures
+#[derive(Debug, Deserialize)]
+pub struct StoresFullRoot {
+    #[serde(rename = "ChainId", alias = "ChainID")]
+    pub chain_id: String,
+    #[serde(rename = "SubChains")]
+    pub sub_chains: SubChainsContainer,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SubChainsContainer {
+    #[serde(rename = "SubChain")]
+    pub sub_chains: Vec<SubChain>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SubChain {
+    #[serde(rename = "SubChainId", alias = "SubChainID")]
+    pub sub_chain_id: i32,
+    #[serde(rename = "Stores")]
+    pub stores: StoresContainer,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StoresContainer {
+    #[serde(rename = "Store")]
+    pub stores: Vec<StoreRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StoreRecord {
+    #[serde(rename = "StoreId", alias = "StoreID")]
+    pub store_id: i32,
+    #[serde(rename = "StoreName")]
+    pub store_name: Option<String>,
+    #[serde(rename = "Address")]
+    pub address: Option<String>,
+    #[serde(rename = "City")]
+    pub city: Option<String>,
+    #[serde(rename = "ZipCode", alias = "ZIPCode")]
+    pub zip_code: Option<String>,
+}
+
 // API Request/Response Structures
 #[derive(Debug, Deserialize)]
 pub struct LocationQuery {
@@ -67,8 +110,10 @@ pub struct LocationQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct PriceComparisonRequest {
-    pub user_location: LocationQuery,
-    pub grocery_list: Vec<String>, // List of item names to search for
+    pub user_location: Option<LocationQuery>, // Optional — if absent, search all stores
+    pub grocery_list: Vec<String>,
+    pub page: Option<usize>,
+    pub page_size: Option<usize>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -77,6 +122,7 @@ pub struct StoreInfo {
     pub chain_id: String,
     pub sub_chain_id: i32,
     pub store_id: i32,
+    pub store_name: Option<String>,
     pub address: Option<String>,
     pub city: Option<String>,
     pub latitude: Option<f64>,
@@ -107,4 +153,6 @@ pub struct PriceComparisonResponse {
     pub stores: Vec<StoreComparison>,
     pub best_store: Option<StoreComparison>,
     pub requested_items: Vec<String>,
+    pub total_stores: usize,
+    pub has_more: bool,
 }

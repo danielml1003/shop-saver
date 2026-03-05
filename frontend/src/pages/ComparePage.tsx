@@ -1,169 +1,333 @@
-import React, { useMemo, useState } from 'react';
-import { Container, Box, Typography, TextField, Button, Chip, Stack, GridLegacy as Grid, Card, CardContent, Divider, Alert } from '@mui/material';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  Autocomplete,
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Chip,
+  CircularProgress,
+  Container,
+  Divider,
+  Stack,
+  TextField,
+  Typography,
+} from '@mui/material';
+import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
+import LocationOnIcon from '@mui/icons-material/LocationOn';
+import StarIcon from '@mui/icons-material/Star';
 import { apiService } from '../services/api';
-import { PriceComparisonRequest, PriceComparisonResponse, UserLocation, StoreComparison } from '../types';
+import { PriceComparisonRequest, PriceComparisonResponse, StoreComparison, UserLocation } from '../types';
 
-const defaultLocation: UserLocation = {
-  latitude: 32.0853,
-  longitude: 34.7818,
-  radius_km: 15,
-};
+const PAGE_SIZE = 10;
 
 const ComparePage: React.FC = () => {
-  const [location, setLocation] = useState<UserLocation>(defaultLocation);
+  // --- grocery bag state ---
   const [inputItem, setInputItem] = useState('');
+  const [suggestions, setSuggestions] = useState<string[]>([]);
   const [items, setItems] = useState<string[]>([]);
+
+  // --- location (optional) ---
+  const [location, setLocation] = useState<UserLocation | null>(null);
+
+  // --- results state ---
+  const [results, setResults] = useState<StoreComparison[]>([]);
+  const [bestStore, setBestStore] = useState<StoreComparison | null>(null);
+  const [totalStores, setTotalStores] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [searched, setSearched] = useState(false);
+
+  // --- loading state ---
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<PriceComparisonResponse | null>(null);
 
-  const canCompare = useMemo(() => items.length > 0 && !loading, [items, loading]);
+  // --- refs ---
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // keep latest items/page in refs so the IntersectionObserver closure stays fresh
+  const itemsRef = useRef(items);
+  const pageRef = useRef(currentPage);
+  const hasMoreRef = useRef(hasMore);
+  const loadingMoreRef = useRef(loadingMore);
 
-  const addItem = () => {
-    const trimmed = inputItem.trim();
-    if (!trimmed) return;
-    if (!items.includes(trimmed)) setItems(prev => [...prev, trimmed]);
+  useEffect(() => { itemsRef.current = items; }, [items]);
+  useEffect(() => { pageRef.current = currentPage; }, [currentPage]);
+  useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
+  useEffect(() => { loadingMoreRef.current = loadingMore; }, [loadingMore]);
+
+  // --- autocomplete: debounce query ---
+  const handleInputChange = (_: React.SyntheticEvent, value: string) => {
+    setInputItem(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (value.length < 2) { setSuggestions([]); return; }
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const names = await apiService.searchItemNames(value);
+        setSuggestions(names);
+      } catch { /* ignore */ }
+    }, 300);
+  };
+
+  const addItem = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || items.includes(trimmed)) return;
+    setItems(prev => [...prev, trimmed]);
     setInputItem('');
+    setSuggestions([]);
   };
 
-  const removeItem = (name: string) => {
-    setItems(prev => prev.filter(i => i !== name));
-  };
+  const removeItem = (name: string) => setItems(prev => prev.filter(i => i !== name));
 
+  // --- geolocation ---
   const useGeolocation = () => {
     if (!navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(pos => {
-      setLocation(prev => ({ ...prev, latitude: pos.coords.latitude, longitude: pos.coords.longitude }));
+      setLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, radius_km: 10 });
     });
   };
 
-  const runCompare = async () => {
-    setLoading(true);
-    setError(null);
-    setResult(null);
+  // --- fetch a page of results ---
+  const fetchPage = useCallback(async (page: number, append: boolean) => {
+    const grocery = itemsRef.current;
+    if (grocery.length === 0) return;
+
+    if (page === 1) { setLoading(true); setError(null); }
+    else setLoadingMore(true);
+
     try {
       const payload: PriceComparisonRequest = {
-        user_location: location,
-        grocery_list: items,
+        grocery_list: grocery,
+        page,
+        page_size: PAGE_SIZE,
+        ...(location ? { user_location: location } : {}),
       };
-      const data = await apiService.comparePrices(payload);
-      setResult(data);
+      const data: PriceComparisonResponse = await apiService.comparePrices(payload);
+
+      if (append) {
+        setResults(prev => [...prev, ...data.stores]);
+      } else {
+        setResults(data.stores);
+        setBestStore(data.best_store ?? null);
+        setSearched(true);
+      }
+      setTotalStores(data.total_stores);
+      setHasMore(data.has_more);
+      setCurrentPage(page);
     } catch (e: any) {
-      console.error(e);
-      setError('שגיאה בהרצת ההשוואה.');
+      const isNetwork = !e?.response;
+      setError(isNetwork ? 'השרת לא זמין. ודא שהשרת רץ.' : 'שגיאה בהרצת ההשוואה.');
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
+  }, [location]);
+
+  const runSearch = () => {
+    setResults([]);
+    setBestStore(null);
+    setCurrentPage(1);
+    setHasMore(false);
+    fetchPage(1, false);
   };
 
-  const renderStoreCard = (sc: StoreComparison) => (
-    <Card key={`${sc.store.id}`} sx={{ height: '100%' }}>
-      <CardContent>
-        <Typography variant="h6" gutterBottom>
-          {sc.store.chain_id}-{sc.store.store_id} {sc.store.city ? `· ${sc.store.city}` : ''}
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          מרחק: {sc.store.distance_km?.toFixed(2) ?? '-'} ק"מ
-        </Typography>
-        <Typography variant="body1" sx={{ mt: 1, fontWeight: 600 }}>
-          מחיר כולל: ₪{sc.total_price.toFixed(2)} · נמצאו {sc.items_found} פריטים
-        </Typography>
-        <Divider sx={{ my: 1.5 }} />
-        <Typography variant="subtitle2">פריטים שנמצאו</Typography>
-        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ my: 1 }}>
-          {sc.items.map(it => (
-            <Chip key={it.item_code} label={`${it.item_name} · ₪${it.price.toFixed(2)}`} size="small" />
-          ))}
-        </Stack>
-        {sc.items_missing.length > 0 && (
-          <>
-            <Typography variant="subtitle2">פריטים שלא נמצאו</Typography>
-            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 1 }}>
-              {sc.items_missing.map(name => (
-                <Chip key={name} label={name} color="warning" size="small" />
-              ))}
-            </Stack>
-          </>
-        )}
-      </CardContent>
-    </Card>
-  );
+  // --- IntersectionObserver for infinite scroll ---
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+
+    const observer = new IntersectionObserver(entries => {
+      if (
+        entries[0].isIntersecting &&
+        hasMoreRef.current &&
+        !loadingMoreRef.current
+      ) {
+        fetchPage(pageRef.current + 1, true);
+      }
+    }, { threshold: 0.1 });
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [fetchPage, searched]);
+
+  // --- render a store card ---
+  const renderCard = (sc: StoreComparison, isBest: boolean) => {
+    const s = sc.store;
+    const label = s.store_name || `${s.chain_id}-${s.store_id}`;
+    const location_str = [s.city, s.address].filter(Boolean).join(' · ');
+
+    return (
+      <Card
+        key={s.id}
+        variant="outlined"
+        sx={{
+          mb: 2,
+          borderColor: isBest ? 'success.main' : 'divider',
+          borderWidth: isBest ? 2 : 1,
+        }}
+      >
+        <CardContent>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 1 }}>
+            <Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                {isBest && <StarIcon fontSize="small" color="success" />}
+                <Typography variant="h6" component="span">{label}</Typography>
+              </Box>
+              {location_str && (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
+                  <LocationOnIcon fontSize="small" color="action" />
+                  <Typography variant="body2" color="text.secondary">{location_str}</Typography>
+                </Box>
+              )}
+              {s.distance_km != null && (
+                <Typography variant="body2" color="text.secondary">
+                  {s.distance_km.toFixed(1)} ק"מ
+                </Typography>
+              )}
+            </Box>
+            <Box sx={{ textAlign: 'left' }}>
+              <Typography variant="h5" color={isBest ? 'success.main' : 'text.primary'} fontWeight={700}>
+                ₪{sc.total_price.toFixed(2)}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {sc.items_found} / {sc.items_found + sc.items_missing.length} פריטים
+              </Typography>
+            </Box>
+          </Box>
+
+          <Divider sx={{ my: 1.5 }} />
+
+          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+            {sc.items.map(it => (
+              <Chip
+                key={it.item_code}
+                label={`${it.item_name} · ₪${it.price.toFixed(2)}`}
+                size="small"
+                color="default"
+              />
+            ))}
+            {sc.items_missing.map(name => (
+              <Chip key={name} label={name} size="small" color="warning" variant="outlined" />
+            ))}
+          </Stack>
+        </CardContent>
+      </Card>
+    );
+  };
 
   return (
-    <Container maxWidth="lg" sx={{ mt: 4, mb: 6 }}>
-      <Typography variant="h4" gutterBottom>
-        השוואת סל קניות
-      </Typography>
-
-      <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center', mb: 2 }}>
-        <TextField
-          label="קו רוחב"
-          type="number"
-          size="small"
-          value={location.latitude}
-          onChange={(e) => setLocation(prev => ({ ...prev, latitude: Number(e.target.value) }))}
-        />
-        <TextField
-          label="קו אורך"
-          type="number"
-          size="small"
-          value={location.longitude}
-          onChange={(e) => setLocation(prev => ({ ...prev, longitude: Number(e.target.value) }))}
-        />
-        <TextField
-          label={'רדיוס (ק"מ)'}
-          type="number"
-          size="small"
-          value={location.radius_km ?? ''}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLocation(prev => ({ ...prev, radius_km: Number(e.target.value) }))}
-        />
-        <Button variant="outlined" onClick={useGeolocation}>המיקום שלי</Button>
+    <Container maxWidth="md" sx={{ mt: 4, mb: 8 }}>
+      {/* Title */}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 3 }}>
+        <ShoppingCartIcon color="primary" fontSize="large" />
+        <Typography variant="h4" fontWeight={700}>סל הקניות שלי</Typography>
       </Box>
 
-      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mb: 1 }}>
-        <TextField
-          label="הוסף מוצר לסל"
-          size="small"
-          fullWidth
-          value={inputItem}
-          onChange={(e) => setInputItem(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') addItem(); }}
+      {/* Item input */}
+      <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+        <Autocomplete
+          freeSolo
+          options={suggestions}
+          inputValue={inputItem}
+          onInputChange={handleInputChange}
+          onChange={(_, value) => { if (value) addItem(value as string); }}
+          sx={{ flexGrow: 1 }}
+          renderInput={(params) => (
+            <TextField
+              {...params}
+              label="הוסף מוצר לסל"
+              size="small"
+              onKeyDown={(e) => { if (e.key === 'Enter' && inputItem.trim()) addItem(inputItem); }}
+            />
+          )}
+          noOptionsText="לא נמצאו תוצאות"
         />
-        <Button variant="contained" onClick={addItem}>הוסף</Button>
+        <Button variant="contained" onClick={() => addItem(inputItem)} disabled={!inputItem.trim()}>
+          הוסף
+        </Button>
       </Box>
 
+      {/* Item chips */}
       {items.length > 0 && (
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
           {items.map(name => (
-            <Chip key={name} label={name} onDelete={() => removeItem(name)} />
+            <Chip key={name} label={name} onDelete={() => removeItem(name)} color="primary" variant="outlined" />
           ))}
         </Stack>
       )}
 
-      <Button variant="contained" disabled={!canCompare} onClick={runCompare}>
-        השווה מחירים
-      </Button>
+      {/* Actions */}
+      <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', mb: 3, flexWrap: 'wrap' }}>
+        <Button
+          variant="contained"
+          size="large"
+          disabled={items.length === 0 || loading}
+          onClick={runSearch}
+          startIcon={loading ? <CircularProgress size={18} color="inherit" /> : undefined}
+        >
+          {loading ? 'מחפש...' : 'השווה מחירים'}
+        </Button>
+        <Button
+          variant="outlined"
+          size="small"
+          onClick={useGeolocation}
+          startIcon={<LocationOnIcon />}
+          color={location ? 'success' : 'inherit'}
+        >
+          {location ? 'מיקום נבחר' : 'המיקום שלי (אופציונלי)'}
+        </Button>
+        {location && (
+          <Button size="small" color="inherit" onClick={() => setLocation(null)}>הסר מיקום</Button>
+        )}
+      </Box>
 
-      {error && (
-        <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert>
+      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+
+      {/* Results */}
+      {searched && !loading && (
+        <>
+          {results.length === 0 ? (
+            <Alert severity="info">לא נמצאו חנויות עם הפריטים המבוקשים.</Alert>
+          ) : (
+            <>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                נמצאו {totalStores} חנויות · מציג {results.length}
+              </Typography>
+
+              {bestStore && (
+                <Alert severity="success" icon={<StarIcon />} sx={{ mb: 2 }}>
+                  הכי משתלם: <strong>{bestStore.store.store_name || `${bestStore.store.chain_id}-${bestStore.store.store_id}`}</strong>
+                  {bestStore.store.city ? ` · ${bestStore.store.city}` : ''}
+                  {' · '}₪{bestStore.total_price.toFixed(2)}
+                </Alert>
+              )}
+
+              {results.map((sc) => renderCard(sc, sc.store.id === bestStore?.store.id))}
+            </>
+          )}
+        </>
       )}
 
-      {result && (
-        <Box sx={{ mt: 4 }}>
-          {result.best_store && (
-            <Alert severity="success" sx={{ mb: 2 }}>
-              החנות המשתלמת: רשת {result.best_store.store.chain_id}-{result.best_store.store.store_id} · מחיר כולל ₪{result.best_store.total_price.toFixed(2)}
-            </Alert>
-          )}
-          <Grid container spacing={2}>
-            {result.stores.map(renderStoreCard)}
-          </Grid>
+      {/* Sentinel for infinite scroll */}
+      {searched && <div ref={sentinelRef} style={{ height: 1 }} />}
+
+      {/* Load more spinner */}
+      {loadingMore && (
+        <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
+          <CircularProgress />
         </Box>
+      )}
+
+      {/* End of results */}
+      {searched && !hasMore && results.length > 0 && !loadingMore && (
+        <Typography variant="body2" color="text.secondary" textAlign="center" sx={{ mt: 2 }}>
+          הוצגו כל {results.length} החנויות
+        </Typography>
       )}
     </Container>
   );
 };
 
 export default ComparePage;
-
-

@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tracing::error;
 
 use crate::database::DatabaseManager;
@@ -51,10 +51,28 @@ pub async fn compare_prices(
     }
 }
 
+pub async fn search_items(
+    State(db): State<Arc<DatabaseManager>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<String>>, StatusCode> {
+    let q = params.get("q").map(|s| s.as_str()).unwrap_or("");
+    if q.len() < 2 {
+        return Ok(Json(vec![]));
+    }
+    match db.search_item_names(q, 20).await {
+        Ok(names) => Ok(Json(names)),
+        Err(e) => {
+            error!("Error searching item names: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 pub fn create_router(db_manager: Arc<DatabaseManager>) -> Router {
     Router::new()
         .route("/health", get(health_check))
         .route("/api/stores/nearby", get(get_nearby_stores))
         .route("/api/compare-prices", post(compare_prices))
+        .route("/api/items/search", get(search_items))
         .with_state(db_manager)
 }
