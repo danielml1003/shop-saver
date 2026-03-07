@@ -56,6 +56,11 @@ class StoreDownloader(ABC):
         print("starting attempt on extraction")
         output_file_path = None # Initialize to None
 
+        # Some chains (e.g. Osher Ad Stores files) publish plain XML directly
+        if compressed_file.lower().endswith('.xml'):
+            print("  File is already XML — no extraction needed.")
+            return compressed_file
+
         try:
             # Read the first few bytes to determine file type
             with open(compressed_file, 'rb') as f:

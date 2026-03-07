@@ -1,2 +1,22 @@
-0 9 * * * python3 /app/main.py >> /var/log/cron.log 2>&1
-0 15 * * * python3 /app/main.py >> /var/log/cron.log 2>&1
+# Shop-Saver pipeline cron schedule
+#
+# Install with:
+#   crontab /path/to/shop-saver/service/cronjob
+#
+# Or append to existing crontab:
+#   crontab -l | cat - /path/to/shop-saver/service/cronjob | crontab -
+#
+# All times are server-local time (set server to Asia/Jerusalem for accuracy).
+# Israeli chains publish new price files daily — typically between 1 AM and 6 AM.
+#
+# LOG_DIR and PYTHON can be overridden via environment if needed.
+
+SHELL=/bin/bash
+PROJECT=/opt/shop-saver
+LOG_DIR=/var/log/shop-saver
+
+# --- Main download run: 6:00 AM (after all chains have published) ---
+0 6 * * * root bash $PROJECT/service/run_pipeline.sh >> $LOG_DIR/pipeline.log 2>&1
+
+# --- Afternoon re-run: 1:00 PM (some chains publish updated prices midday) ---
+0 13 * * * root bash $PROJECT/service/run_pipeline.sh >> $LOG_DIR/pipeline.log 2>&1

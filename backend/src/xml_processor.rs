@@ -5,7 +5,7 @@ use tokio::fs;
 use tracing::{error, info};
 use sqlx::Row;
 
-use crate::database::DatabaseManager;
+use crate::database::{DatabaseManager, is_ean13};
 use crate::models::{XmlRoot, Item, StoresFullRoot};
 
 pub struct XmlFileProcessor {
@@ -225,7 +225,17 @@ impl XmlFileProcessor {
         for item in xml_data.items.items {
             match self.insert_item(store_id, &item, file_path).await {
                 Ok(rows_affected) => {
-                    if rows_affected > 0 { inserted += 1; } else { skipped += 1; }
+                    if rows_affected > 0 {
+                        inserted += 1;
+                        // Populate the product catalog for barcode items
+                        if is_ean13(&item.item_code) {
+                            if let Err(e) = self.db_manager.upsert_product(&item).await {
+                                error!("Error upserting product {}: {}", item.item_code, e);
+                            }
+                        }
+                    } else {
+                        skipped += 1;
+                    }
                 }
                 Err(e) => error!("Error inserting item {}: {}", item.item_code, e),
             }

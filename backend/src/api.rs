@@ -9,7 +9,7 @@ use std::{collections::HashMap, sync::Arc};
 use tracing::error;
 
 use crate::database::DatabaseManager;
-use crate::models::{LocationQuery, PriceComparisonRequest, PriceComparisonResponse, StoreInfo};
+use crate::models::{LocationQuery, PriceComparisonRequest, PriceComparisonResponse, ProductSearchResult, StoreInfo};
 
 pub async fn health_check() -> Json<serde_json::Value> {
     Json(serde_json::json!({
@@ -54,13 +54,13 @@ pub async fn compare_prices(
 pub async fn search_items(
     State(db): State<Arc<DatabaseManager>>,
     Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<String>>, StatusCode> {
+) -> Result<Json<Vec<ProductSearchResult>>, StatusCode> {
     let q = params.get("q").map(|s| s.as_str()).unwrap_or("");
     if q.len() < 2 {
         return Ok(Json(vec![]));
     }
     match db.search_item_names(q, 20).await {
-        Ok(names) => Ok(Json(names)),
+        Ok(results) => Ok(Json(results)),
         Err(e) => {
             error!("Error searching item names: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)

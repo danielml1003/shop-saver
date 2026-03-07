@@ -55,6 +55,20 @@ export interface ApiResponse<T> {
   limit: number;
 }
 
+// A product returned by the autocomplete search.
+// barcode is set when the item has a valid EAN-13 code (most packaged goods).
+// When barcode is present the frontend sends it to the API for exact cross-store matching.
+export interface ProductSearchResult {
+  barcode: string | null;
+  name: string;
+}
+
+// An item in the user's grocery list — tracks both the display name and the barcode (if known).
+export interface GroceryItem {
+  barcode: string | null;
+  name: string;
+}
+
 // Backend API types for price comparison flow
 export interface UserLocation {
   latitude: number;

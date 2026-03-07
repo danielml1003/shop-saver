@@ -1,6 +1,9 @@
 {
-  "short_name": "React App",
-  "name": "Create React App Sample",
+  "short_name": "שופ-סייבר",
+  "name": "Shop-Saver — השוואת מחירים",
+  "description": "השווה מחירי סל קניות בין רשתות סופרמרקט בישראל",
+  "lang": "he",
+  "dir": "rtl",
   "icons": [
     {
       "src": "favicon.ico",
@@ -10,16 +13,21 @@
     {
       "src": "logo192.png",
       "type": "image/png",
-      "sizes": "192x192"
+      "sizes": "192x192",
+      "purpose": "any maskable"
     },
     {
       "src": "logo512.png",
       "type": "image/png",
-      "sizes": "512x512"
+      "sizes": "512x512",
+      "purpose": "any maskable"
     }
   ],
-  "start_url": ".",
+  "start_url": "/",
   "display": "standalone",
-  "theme_color": "#000000",
-  "background_color": "#ffffff"
+  "orientation": "portrait",
+  "theme_color": "#1976d2",
+  "background_color": "#ffffff",
+  "categories": ["shopping", "utilities"],
+  "screenshots": []
 }

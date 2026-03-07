@@ -1,0 +1,35 @@
+[Unit]
+Description=Shop-Saver API Server
+Documentation=https://github.com/danielml1003/shop-saver
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=shop-saver
+Group=shop-saver
+WorkingDirectory=/opt/shop-saver/backend
+
+# Load environment from .env file
+EnvironmentFile=/opt/shop-saver/backend/.env
+
+# The compiled release binary
+ExecStart=/opt/shop-saver/backend/target/release/shop-saver
+
+# Restart automatically if the process crashes
+Restart=on-failure
+RestartSec=5s
+
+# Logging — journald captures stdout/stderr
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shop-saver-api
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -22,9 +22,12 @@ class CeberusStoreDownloader(StoreDownloader):
 
         print(f"\nProcessing Store (FTP): {chain_id}")
 
+        use_active = self.config.get("ftp_active_mode", False)
         try:
             with ftplib.FTP(self.FTP_HOST) as ftp:
                 ftp.login(username, password)
+                if use_active:
+                    ftp.set_pasv(False)
                 all_files = ftp.nlst()
         except ftplib.all_errors as e:
             print(f"FTP listing error for {chain_id}: {e}")
@@ -44,6 +47,8 @@ class CeberusStoreDownloader(StoreDownloader):
             try:
                 with ftplib.FTP(self.FTP_HOST) as ftp:
                     ftp.login(username, password)
+                    if use_active:
+                        ftp.set_pasv(False)
                     with open(local_path, "wb") as f:
                         ftp.retrbinary(f"RETR {filename}", f.write)
                 extracted = self._extract_file(local_path)

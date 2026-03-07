@@ -100,6 +100,13 @@ pub struct StoreRecord {
     pub zip_code: Option<String>,
 }
 
+// Product catalog entry returned by item search autocomplete
+#[derive(Debug, Serialize)]
+pub struct ProductSearchResult {
+    pub barcode: Option<String>,
+    pub name: String,
+}
+
 // API Request/Response Structures
 #[derive(Debug, Deserialize)]
 pub struct LocationQuery {

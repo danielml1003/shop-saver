@@ -6,5 +6,9 @@ from .tiv_taam import TivTaam
 from .victory import Victory
 from .zol_vegadol import ZolVeGadol
 from .carrefour import Carrefour
+from .shufersal import Shufersal
+from .rami_levy import RamiLevy
+from .yohananof import Yohananof
+from .osher_ad import OsherAd
 
-ALL_CHAINS = [King, Maayan, GoodPharm, DorAlon, TivTaam, Victory, ZolVeGadol, Carrefour]
+ALL_CHAINS = [King, Maayan, GoodPharm, DorAlon, TivTaam, Victory, ZolVeGadol, Carrefour, Shufersal, RamiLevy, Yohananof, OsherAd]
