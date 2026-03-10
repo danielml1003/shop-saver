@@ -121,6 +121,7 @@ pub struct PriceComparisonRequest {
     pub grocery_list: Vec<String>,
     pub page: Option<usize>,
     pub page_size: Option<usize>,
+    pub city: Option<String>,  // new — filter to stores in this city
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -161,5 +162,26 @@ pub struct PriceComparisonResponse {
     pub best_store: Option<StoreComparison>,
     pub requested_items: Vec<String>,
     pub total_stores: usize,
+    pub has_more: bool,
+}
+
+/// A single item row returned by the store-items and item-search endpoints.
+#[derive(Debug, Serialize, Clone)]
+pub struct StoreItemRow {
+    pub item_code: String,
+    pub item_name: String,
+    pub manufacturer_name: Option<String>,
+    pub item_price: f64,
+    pub unit_of_measure: Option<String>,
+    pub quantity: Option<String>,
+}
+
+/// Paginated item list returned by GET /api/stores/:id/items and GET /api/items.
+#[derive(Debug, Serialize)]
+pub struct PaginatedItems {
+    pub items: Vec<StoreItemRow>,
+    pub total: i64,
+    pub page: usize,
+    pub page_size: usize,
     pub has_more: bool,
 }
