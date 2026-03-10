@@ -235,6 +235,34 @@ impl DatabaseManager {
         }).collect())
     }
 
+    /// Returns all stores with coordinates, name, and city — for the stores map page.
+    pub async fn get_all_stores(&self) -> Result<Vec<StoreInfo>> {
+        let rows = sqlx::query(
+            "SELECT s.id, s.chain_id, s.sub_chain_id, s.store_id, \
+                    COALESCE(s.store_name, cn.display_name) as store_name, \
+                    s.address, s.city, \
+                    s.latitude::float8, s.longitude::float8 \
+             FROM stores s \
+             LEFT JOIN chain_names cn ON s.chain_id = cn.chain_id \
+             ORDER BY s.city NULLS LAST, store_name NULLS LAST"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|row| StoreInfo {
+            id: row.get("id"),
+            chain_id: row.get("chain_id"),
+            sub_chain_id: row.get("sub_chain_id"),
+            store_id: row.get("store_id"),
+            store_name: row.get("store_name"),
+            address: row.get("address"),
+            city: row.get("city"),
+            latitude: row.get("latitude"),
+            longitude: row.get("longitude"),
+            distance_km: None,
+        }).collect())
+    }
+
     // Returns stores that carry at least one of the requested items, ordered by coverage.
     // Handles barcodes (exact match) and name terms (LIKE) separately so each can use its index.
     pub async fn get_stores_with_items(
