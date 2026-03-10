@@ -1,5 +1,5 @@
 use sqlx::{PgPool, Executor, Row};
-use crate::models::{PriceComparisonRequest, PriceComparisonResponse, StoreInfo, ItemPrice, StoreComparison, StoreRecord, ProductSearchResult};
+use crate::models::{PriceComparisonRequest, PriceComparisonResponse, StoreInfo, ItemPrice, StoreComparison, StoreRecord, ProductSearchResult, StoreItemRow};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
@@ -261,6 +261,58 @@ impl DatabaseManager {
             longitude: row.get("longitude"),
             distance_km: None,
         }).collect())
+    }
+
+    /// Returns paginated items for one store, optionally filtered by name query.
+    /// Uses DISTINCT ON item_code to return the cheapest price per distinct item.
+    pub async fn get_store_items(
+        &self,
+        store_id: i32,
+        query: Option<&str>,
+        page: usize,
+        limit: usize,
+    ) -> Result<(Vec<StoreItemRow>, usize)> {
+        let offset = ((page.saturating_sub(1)) * limit) as i64;
+        let pattern = match query {
+            Some(q) if !q.is_empty() => format!("%{}%", q.to_lowercase()),
+            _ => "%".to_string(),
+        };
+
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT item_code) FROM items \
+             WHERE store_pk = $1 AND LOWER(item_name) LIKE $2"
+        )
+        .bind(store_id)
+        .bind(&pattern)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let rows = sqlx::query(
+            "SELECT DISTINCT ON (item_code) \
+                    item_code, item_name, manufacturer_name, \
+                    item_price::float8 as item_price, unit_of_measure, quantity \
+             FROM items \
+             WHERE store_pk = $1 AND LOWER(item_name) LIKE $2 \
+             ORDER BY item_code, item_price ASC \
+             LIMIT $3 OFFSET $4"
+        )
+        .bind(store_id)
+        .bind(&pattern)
+        .bind(limit as i64)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let items = rows.into_iter().map(|row| StoreItemRow {
+            item_code: row.get("item_code"),
+            item_name: row.get("item_name"),
+            manufacturer_name: row.get("manufacturer_name"),
+            item_price: row.get("item_price"),
+            unit_of_measure: row.get("unit_of_measure"),
+            quantity: row.get("quantity"),
+        }).collect();
+
+        Ok((items, total as usize))
     }
 
     // Returns stores that carry at least one of the requested items, ordered by coverage.
