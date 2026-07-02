@@ -100,13 +100,21 @@ impl XmlFileProcessor {
             match self.process_xml_file(&path).await {
                 Ok(_) => {
                     processed += 1;
+                    if let Err(e) = self.db_manager.mark_file_processed(&filename, file_size).await {
+                        error!("Error marking file as processed {}: {}", filename, e);
+                    }
                 }
-                Err(e) => error!("Error processing existing file {:?}: {}", path, e),
-            }
-            // Mark as processed regardless of success or failure so we don't retry on restart.
-            // Promo/PromoFull files have a different XML format and will always fail — no sense retrying.
-            if let Err(e) = self.db_manager.mark_file_processed(&filename, file_size).await {
-                error!("Error marking file as processed {}: {}", filename, e);
+                Err(e) => {
+                    error!("Error processing existing file {:?}: {}", path, e);
+                    // Parse errors are permanent — the file will never succeed, so mark it
+                    // done to avoid retry loops. Transient failures (DB connectivity etc.)
+                    // stay unmarked so the next scan retries them.
+                    if e.to_string().contains("parsing error") {
+                        if let Err(e2) = self.db_manager.mark_file_processed(&filename, file_size).await {
+                            error!("Error marking unparseable file {}: {}", filename, e2);
+                        }
+                    }
+                }
             }
         }
 
@@ -146,8 +154,16 @@ impl XmlFileProcessor {
                         if let EventKind::Create(_) | EventKind::Modify(_) = event.kind {
                             for path in event.paths {
                                 if path.extension().and_then(|s| s.to_str()) == Some("xml") {
+                                    // Promo files have a different XML schema and are not ingested —
+                                    // skip them here just like the startup scan does.
+                                    let fname_lower = path.file_name()
+                                        .map(|n| n.to_string_lossy().to_lowercase())
+                                        .unwrap_or_default();
+                                    if fname_lower.contains("promo") {
+                                        continue;
+                                    }
                                     info!("New/modified XML file detected: {:?}", path);
-                                    
+
                                     let path_clone = path.clone();
                                     let db_for_task = db_clone.clone();
                                     let dir_for_task = watch_dir.clone();

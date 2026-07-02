@@ -204,7 +204,8 @@ impl DatabaseManager {
             SELECT
                 s.id, s.chain_id, s.sub_chain_id, s.store_id,
                 COALESCE(s.store_name, cn.display_name) as store_name,
-                s.address, s.city, s.latitude, s.longitude,
+                s.address, s.city,
+                s.latitude::float8 as latitude, s.longitude::float8 as longitude,
                 6371 * acos(cos(radians($1)) * cos(radians(s.latitude))
                     * cos(radians(s.longitude) - radians($2))
                     + sin(radians($1)) * sin(radians(s.latitude))) as distance_km
@@ -298,6 +299,66 @@ impl DatabaseManager {
         )
         .bind(store_id)
         .bind(&pattern)
+        .bind(limit as i64)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let items = rows.into_iter().map(|row| StoreItemRow {
+            item_code: row.get("item_code"),
+            item_name: row.get("item_name"),
+            manufacturer_name: row.get("manufacturer_name"),
+            item_price: row.get("item_price"),
+            unit_of_measure: row.get("unit_of_measure"),
+            quantity: row.get("quantity"),
+        }).collect();
+
+        Ok((items, total as usize))
+    }
+
+    /// Returns paginated items across all stores, DISTINCT by item name (cheapest price per name).
+    /// Supports optional query string and price range filters.
+    pub async fn search_items_paginated(
+        &self,
+        query: &str,
+        min_price: Option<f64>,
+        max_price: Option<f64>,
+        page: usize,
+        limit: usize,
+    ) -> Result<(Vec<StoreItemRow>, usize)> {
+        let offset = ((page.saturating_sub(1)) * limit) as i64;
+        let pattern = if query.is_empty() {
+            "%".to_string()
+        } else {
+            format!("%{}%", query.to_lowercase())
+        };
+
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT LOWER(item_name)) FROM items \
+             WHERE LOWER(item_name) LIKE $1 \
+               AND ($2::float8 IS NULL OR item_price::float8 >= $2) \
+               AND ($3::float8 IS NULL OR item_price::float8 <= $3)"
+        )
+        .bind(&pattern)
+        .bind(min_price)
+        .bind(max_price)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let rows = sqlx::query(
+            "SELECT DISTINCT ON (LOWER(item_name)) \
+                    item_code, item_name, manufacturer_name, \
+                    item_price::float8 as item_price, unit_of_measure, quantity \
+             FROM items \
+             WHERE LOWER(item_name) LIKE $1 \
+               AND ($2::float8 IS NULL OR item_price::float8 >= $2) \
+               AND ($3::float8 IS NULL OR item_price::float8 <= $3) \
+             ORDER BY LOWER(item_name), item_price ASC \
+             LIMIT $4 OFFSET $5"
+        )
+        .bind(&pattern)
+        .bind(min_price)
+        .bind(max_price)
         .bind(limit as i64)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -549,13 +610,102 @@ impl DatabaseManager {
         Ok(by_store)
     }
 
-    pub async fn find_items_in_store(&self, store_id: i32, grocery_list: &[String]) -> Result<Vec<ItemPrice>> {
-        let by_store = self.find_items_for_stores(&[store_id], grocery_list).await?;
-        Ok(by_store
-            .into_values()
-            .next()
-            .map(|m| m.into_values().collect())
-            .unwrap_or_default())
+    /// Like get_stores_with_items but pre-filtered to a set of candidate store IDs.
+    /// Used when a location or city pre-filter has already determined the candidate set.
+    async fn get_stores_with_items_from_set(
+        &self,
+        grocery_list: &[String],
+        candidate_ids: &[i32],
+        page: usize,
+        page_size: usize,
+    ) -> Result<(Vec<StoreInfo>, usize)> {
+        if grocery_list.is_empty() || candidate_ids.is_empty() {
+            return Ok((vec![], 0));
+        }
+
+        let (barcodes, name_terms): (Vec<&String>, Vec<&String>) =
+            grocery_list.iter().partition(|s| is_ean13(s));
+
+        let mut term_store_sets: Vec<HashSet<i32>> = Vec::new();
+
+        for barcode in &barcodes {
+            let ids: Vec<i32> = sqlx::query_scalar(
+                "SELECT DISTINCT store_pk FROM items \
+                 WHERE item_code = $1 AND store_pk = ANY($2)"
+            )
+            .bind(barcode.as_str())
+            .bind(candidate_ids)
+            .fetch_all(&self.pool)
+            .await?;
+            term_store_sets.push(ids.into_iter().collect());
+        }
+
+        for term in &name_terms {
+            let pattern = format!("%{}%", term.to_lowercase());
+            let ids: Vec<i32> = sqlx::query_scalar(
+                "SELECT DISTINCT store_pk FROM items \
+                 WHERE LOWER(item_name) LIKE $1 AND store_pk = ANY($2)"
+            )
+            .bind(&pattern)
+            .bind(candidate_ids)
+            .fetch_all(&self.pool)
+            .await?;
+            term_store_sets.push(ids.into_iter().collect());
+        }
+
+        let all_ids: HashSet<i32> = term_store_sets.iter()
+            .flat_map(|s| s.iter().cloned())
+            .collect();
+
+        let mut coverage: Vec<(i32, usize)> = all_ids.iter().map(|&sid| {
+            let count = term_store_sets.iter().filter(|s| s.contains(&sid)).count();
+            (sid, count)
+        }).collect();
+        coverage.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        let total = all_ids.len();
+        let offset = (page - 1) * page_size;
+        let page_ids: Vec<i32> = coverage.into_iter()
+            .skip(offset).take(page_size).map(|(id, _)| id).collect();
+
+        if page_ids.is_empty() {
+            return Ok((vec![], total));
+        }
+
+        let rows = sqlx::query(
+            "SELECT s.id, s.chain_id, s.sub_chain_id, s.store_id, \
+                    COALESCE(s.store_name, cn.display_name) as store_name, \
+                    s.address, s.city, \
+                    s.latitude::float8 as latitude, s.longitude::float8 as longitude \
+             FROM stores s \
+             LEFT JOIN chain_names cn ON s.chain_id = cn.chain_id \
+             WHERE s.id = ANY($1)"
+        )
+        .bind(&page_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut id_to_store: HashMap<i32, StoreInfo> = rows.into_iter().map(|row| {
+            let id: i32 = row.get("id");
+            (id, StoreInfo {
+                id,
+                chain_id: row.get("chain_id"),
+                sub_chain_id: row.get("sub_chain_id"),
+                store_id: row.get("store_id"),
+                store_name: row.get("store_name"),
+                address: row.get("address"),
+                city: row.get("city"),
+                latitude: row.get("latitude"),
+                longitude: row.get("longitude"),
+                distance_km: None,
+            })
+        }).collect();
+
+        let stores: Vec<StoreInfo> = page_ids.iter()
+            .filter_map(|id| id_to_store.remove(id))
+            .collect();
+
+        Ok((stores, total))
     }
 
     pub async fn compare_prices(&self, request: PriceComparisonRequest) -> Result<PriceComparisonResponse> {
@@ -563,12 +713,20 @@ impl DatabaseManager {
         let page_size = request.page_size.unwrap_or(10).max(1).min(50);
 
         let (stores, total_stores) = if let Some(ref loc) = request.user_location {
+            // Get IDs of all stores within radius, then intersect with item-carrying stores
             let radius_km = loc.radius_km.unwrap_or(10.0);
-            let all = self.get_nearby_stores(loc.latitude, loc.longitude, radius_km).await?;
-            let total = all.len();
-            let offset = (page - 1) * page_size;
-            let paged: Vec<_> = all.into_iter().skip(offset).take(page_size).collect();
-            (paged, total)
+            let nearby = self.get_nearby_stores(loc.latitude, loc.longitude, radius_km).await?;
+            let nearby_ids: Vec<i32> = nearby.iter().map(|s| s.id).collect();
+            self.get_stores_with_items_from_set(&request.grocery_list, &nearby_ids, page, page_size).await?
+        } else if let Some(ref city) = request.city {
+            // Get IDs of all stores in that city, then intersect with item-carrying stores
+            let city_ids: Vec<i32> = sqlx::query_scalar(
+                "SELECT id FROM stores WHERE LOWER(city) LIKE $1"
+            )
+            .bind(format!("%{}%", city.to_lowercase()))
+            .fetch_all(&self.pool)
+            .await?;
+            self.get_stores_with_items_from_set(&request.grocery_list, &city_ids, page, page_size).await?
         } else {
             self.get_stores_with_items(&request.grocery_list, page, page_size).await?
         };
@@ -707,5 +865,38 @@ impl DatabaseManager {
     pub(crate) fn parse_datetime(&self, datetime_str: &str) -> Result<chrono::NaiveDateTime> {
         chrono::NaiveDateTime::parse_from_str(datetime_str, "%Y-%m-%d %H:%M:%S")
             .map_err(|e| anyhow::anyhow!("Failed to parse datetime '{}': {}", datetime_str, e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_ean13;
+
+    #[test]
+    fn valid_ean13_barcodes() {
+        // EAN-13 codes with correct check digits
+        assert!(is_ean13("7290000066769"));
+        assert!(is_ean13("7290027600007"));
+        assert!(is_ean13("4006381333931"));
+    }
+
+    #[test]
+    fn wrong_check_digit_rejected() {
+        assert!(!is_ean13("7290000066768"));
+        assert!(!is_ean13("4006381333930"));
+    }
+
+    #[test]
+    fn wrong_length_rejected() {
+        assert!(!is_ean13(""));
+        assert!(!is_ean13("729000006676"));    // 12 digits
+        assert!(!is_ean13("72900000667680"));  // 14 digits
+    }
+
+    #[test]
+    fn non_digits_rejected() {
+        assert!(!is_ean13("729000006676a"));
+        assert!(!is_ean13("חלב תנובה 1 ל"));
+        assert!(!is_ean13("7290-00006676"));
     }
 }

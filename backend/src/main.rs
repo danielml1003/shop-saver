@@ -4,7 +4,7 @@ mod xml_processor;
 mod api;
 
 use anyhow::Result;
-use axum::http::{header, Method};
+use axum::http::Method;
 use std::{env, sync::Arc};
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
@@ -34,8 +34,13 @@ async fn main() -> Result<()> {
         .parse::<u16>()
         .unwrap_or(3000);
 
-    let safe_db_url = database_url
-        .replace(&database_url[database_url.find("://").unwrap_or(0)+3..database_url.find("@").unwrap_or(database_url.len())], "://***:***@");
+    // Mask credentials (the part between "://" and "@", when both exist and are ordered)
+    let safe_db_url = match (database_url.find("://"), database_url.rfind('@')) {
+        (Some(scheme_end), Some(at)) if at > scheme_end + 3 => {
+            format!("{}***:***{}", &database_url[..scheme_end + 3], &database_url[at..])
+        }
+        _ => database_url.clone(),
+    };
     info!("📊 Database URL: {}", safe_db_url);
     info!("📁 Watch Directory: {}", watch_directory);
     info!("🌐 Server will run on port: {}", server_port);
@@ -68,16 +73,31 @@ async fn main() -> Result<()> {
         }
     });
 
+    // CORS: restrict to CORS_ALLOWED_ORIGINS (comma-separated) when set;
+    // wide open otherwise (dev / same-origin nginx deployments).
+    let cors = match env::var("CORS_ALLOWED_ORIGINS") {
+        Ok(origins) if !origins.trim().is_empty() => {
+            let parsed: Vec<_> = origins
+                .split(',')
+                .filter_map(|o| o.trim().parse::<axum::http::HeaderValue>().ok())
+                .collect();
+            info!("🔒 CORS restricted to: {:?}", parsed);
+            CorsLayer::new()
+                .allow_origin(parsed)
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                .allow_headers(Any)
+        }
+        _ => CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+            .allow_headers(Any),
+    };
+
     let app = create_router(db_manager)
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
-                .layer(
-                    CorsLayer::new()
-                        .allow_origin(Any)
-                        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-                        .allow_headers(Any)
-                )
+                .layer(cors)
         );
 
     let addr = format!("0.0.0.0:{}", server_port);
