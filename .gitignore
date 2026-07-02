@@ -67,8 +67,6 @@ backend/.env
 # OS
 .DS_Store
 Thumbs.db
-service/Dockerfile
-service/cronjob
 
 # Logs
 logs/
