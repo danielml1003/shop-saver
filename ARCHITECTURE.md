@@ -179,7 +179,115 @@ Ordered roughly by importance.
 
 ---
 
-## 4. How to finish the project
+## 4. Full store coverage — make the service and backend go through ALL stores
+
+Goal: every branch of every chain is downloaded, parsed, and queryable — no store silently
+missing from price comparisons.
+
+### 4.1 Current coverage per chain (audited)
+
+| Chain(s) | Downloader | How stores are found | Coverage today |
+|---|---|---|---|
+| Rami Levy, Yohananof, Osher Ad, Dor Alon, Tiv Taam | `ceberus.py` (Cerberus FTP) | `ftp.nlst()` lists **every** file on the server for today | ✅ **All stores** (the `StoreId` lists in `dor_alon.py`/`tiv_taam.py` are dead config — the FTP downloader ignores them) |
+| Shufersal | `shufersal.py` | Paginated HTML listing, walks **all pages** | ✅ All stores |
+| Carrefour | `mega.py` | Parses the site's embedded full file listing… | ⚠️ …but then **drops files modified more than 2 hours ago** (`cutoff = now - 2h`). Files uploaded outside the cron window are lost. |
+| King, Maayan, GoodPharm, ZolVeGadol | `original.py` (binaprojects) | **Guesses URLs** from a hardcoded `StoreId` list × timestamps of only the **last 2 hours** (`_recent_timestamps()`) | ❌ New branches never appear (list is stale by definition), and any file uploaded outside the 2-hour window is missed |
+| Victory | `one.py` (laibcatalog) | Guesses URLs from a hardcoded `StoreId` list × a **to-the-minute "now" timestamp** | ❌ Effectively broken — a guessed `YYYYMMDDHHMM` of "right now" almost never matches a published filename |
+
+### 4.2 Service-side fixes (download everything)
+
+The principle: **stop guessing filenames; ask the server what exists.** Every publishing
+platform used by these chains has a listing mechanism:
+
+1. **binaprojects chains** (`original.py` — King, Maayan, GoodPharm, ZolVeGadol):
+   each site exposes a JSON file-listing endpoint (`MainIO_Hok.aspx` at the site root)
+   that returns every file published today with its exact filename. Add a
+   `_discover_urls()` step: fetch the listing, filter by `ChainId` + configured
+   `WFileType`s, download `{Url}{FileNm}` for each entry. Keep the current
+   StoreId×timestamp guessing only as a **fallback** when the listing endpoint fails,
+   so the worst case is today's behavior.
+2. **Victory** (`one.py`): scrape the laibcatalog listing page for `href`s ending in
+   `.zip/.gz/.xml` that contain the chain ID, and download those. Fallback: replace the
+   broken to-the-minute timestamp with hourly candidates over a ~26-hour window.
+3. **Carrefour** (`mega.py`): the full listing is already parsed — just widen the
+   hardcoded 2-hour cutoff to a configurable lookback (default ~26h, i.e. the whole
+   publishing day). Re-downloading is harmless: the backend dedups by filename + size
+   via `processed_files`.
+4. **Cerberus chains**: nothing to do — already full coverage. Delete the unused
+   `StoreId` lists from `dor_alon.py`/`tiv_taam.py` so nobody thinks they matter.
+5. **Verification**: after one pipeline run, `SELECT chain_id, COUNT(*) FROM stores GROUP BY chain_id`
+   should roughly match each chain's real branch count; log per-chain
+   downloaded-file counts in `run_pipeline.sh` and alert when a chain returns 0 files.
+
+### 4.3 Backend-side fixes (process everything that lands)
+
+The Rust processor already handles every `.xml` in the watch directory, but two behaviors
+can silently drop stores:
+
+1. **Failed files are never retried** — `scan_existing_files()` marks a file as processed
+   *"regardless of success or failure"* (`xml_processor.rs:106-110`). A transient DB error
+   during one scan permanently skips that store's prices. Fix: only mark permanently on
+   success or on *parse* errors (those never succeed on retry); leave transient failures
+   unmarked so the next scan retries them.
+2. **Promo files are only skipped in the scan path** — the live file watcher tries to parse
+   `Promo*/PromoFull*` files and logs errors. Apply the same promo skip in the watcher
+   callback for consistency (and mark them processed immediately).
+3. **StoresFull ingestion** must run for every chain so branches get addresses/cities
+   (needed for geocoding and "near me"). ZolVeGadol doesn't publish StoresFull — those
+   branches are created bare from price files; geocoding then has nothing to geocode.
+   Track such stores (`address IS NULL`) and backfill from a manual mapping if needed.
+
+---
+
+## 5. Cyber-security check
+
+### 5.1 Automated security checks (add to CI)
+
+Add a GitHub Actions workflow (`.github/workflows/security.yml`) that runs on every push,
+every PR, and weekly on a schedule:
+
+| Check | Tool | What it catches |
+|---|---|---|
+| Secret scanning | `gitleaks` | Committed passwords, API keys, tokens (run on full git history) |
+| Rust dependency audit | `cargo audit` (RustSec) | Known CVEs in `backend/Cargo.lock` |
+| Node dependency audit | `npm audit --audit-level=high` | Known CVEs in `frontend/package-lock.json` |
+| Python dependency audit | `pip-audit -r requirements.txt` | Known CVEs in the service's Python deps |
+
+Mirror the same four checks in a local `scripts/security_check.sh` so they can be run
+before pushing. The project is "secure-checked" when this workflow is green and required
+on the main branch.
+
+### 5.2 Manual security checklist (current findings)
+
+Reviewed against the current code — status of each item:
+
+- [x] **SQL injection** — safe: every query in `database.rs`/`xml_processor.rs` uses sqlx
+  bind parameters (`$1, $2…`); user input is never string-concatenated into SQL.
+- [x] **Secrets in git** — `.env` is gitignored; only `.env.example` templates are committed.
+- [ ] **CORS wide open** — `main.rs` uses `allow_origin(Any)`. In production nginx proxies
+  same-origin, so lock allowed origins down via an env var.
+- [ ] **No rate limiting** — `POST /api/compare-prices` is expensive and unauthenticated;
+  add `tower-governor` (or nginx `limit_req`) before public exposure.
+- [ ] **Input bounds** — cap `grocery_list` length (e.g. 100 items), string lengths, and
+  `radius_km`/`page_size` ranges in `api.rs`; currently only "non-empty" is checked.
+- [ ] **Untrusted XML** — retailer feeds are external input. `serde-xml-rs` doesn't expand
+  external entities (XXE-safe), but add a file-size cap before `read_to_string` so a huge
+  or malicious file can't exhaust memory.
+- [ ] **FTP credentials** — Cerberus usernames/passwords are the retailers' *published public*
+  credentials, but they live in source; move to env vars (as `dor_alon.py` already does)
+  so all credentials follow one pattern.
+- [ ] **TLS/headers at the edge** — put HTTPS in front (Caddy/Traefik/certbot) and add
+  `X-Content-Type-Options`, `X-Frame-Options`, and a CSP to `frontend/nginx.conf`.
+- [ ] **Docker hardening** — containers currently run as root; add non-root `USER`s to the
+  three Dockerfiles, and don't expose the API or Postgres ports on the host (already true
+  in `docker-compose.yml` — keep it that way).
+- [ ] **Geocoding privacy** — `geocode_stores.py` sends store addresses to Nominatim (fine,
+  public data), but user coordinates from `/api/stores/nearby` must never be logged or
+  sent to third parties; audit `TraceLayer` log output.
+
+---
+
+## 6. How to finish the project
 
 ### Step 1 — Finish the in-flight UI redesign (the active work)
 
@@ -210,7 +318,11 @@ Do these right after Step 1, while the code is warm:
 2. `pg_trgm` index + collapse the compare N+1 into set-based queries. *(half a day, biggest runtime win)*
 3. sqlx migrations; decide items retention (upsert-latest + `price_history` table). *(a day)*
 4. Rename `ceberus` → `cerberus`; delete or wire `mega.py`/`one.py`. *(1 hour)*
-5. Add the test baseline from §3.5. *(1–2 days, pays for itself immediately)*
+5. Implement full store coverage from §4 — dynamic file discovery in the service,
+   retry-on-transient-failure in the backend. *(1 day)*
+6. Add the security checks from §5.1 (CI workflow + local script) and work through the
+   §5.2 checklist items. *(half a day for the workflow; checklist items are small PRs)*
+7. Add the test baseline from §3.5. *(1–2 days, pays for itself immediately)*
 
 ### Step 3 — Go to production
 
@@ -235,5 +347,9 @@ The project is "finished" (v1.0) when:
 2. Zero mock data anywhere in `frontend/src/services/api.ts`.
 3. The pipeline runs unattended for a week on a real server with all 12 chains ingesting,
    and a failure of any downloader produces an alert instead of silence.
-4. A compare of a 20-item basket over the full dataset responds in under ~1s (needs §3 items 6–7).
-5. `cargo test`, `pytest`, and `npm test` all exist and pass in CI.
+4. **Every store of every chain is covered** — the §4.2 discovery fixes are in, the §4.3
+   backend retry fix is in, and the per-chain store counts in the DB match reality.
+5. A compare of a 20-item basket over the full dataset responds in under ~1s (needs §3 items 6–7).
+6. **The security workflow (§5.1) is green and required on `main`**, and every unchecked
+   item in the §5.2 checklist is either fixed or consciously accepted.
+7. `cargo test`, `pytest`, and `npm test` all exist and pass in CI.
