@@ -1,15 +1,15 @@
-from .ceberus import CeberusStoreDownloader
+from .cerberus import CerberusStoreDownloader
 
 _config = {
     "ChainId": 7290103152017,
     "ftp_username": "osherad",
-    # password defaults to username in CeberusStoreDownloader
+    # password defaults to username in CerberusStoreDownloader
     "ftp_active_mode": True,
     "WFileType": ["StoresFull", "PriceFull", "Price"],
 }
 
 
-class OsherAd(CeberusStoreDownloader):
+class OsherAd(CerberusStoreDownloader):
     def __init__(self):
         super().__init__(_config)
 

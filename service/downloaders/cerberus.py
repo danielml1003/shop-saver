@@ -4,7 +4,7 @@ import datetime
 from .base import StoreDownloader
 
 
-class CeberusStoreDownloader(StoreDownloader):
+class CerberusStoreDownloader(StoreDownloader):
     FTP_HOST = "url.retail.publishedprices.co.il"
 
     def _generate_urls(self):

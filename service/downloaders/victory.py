@@ -1,7 +1,19 @@
 import datetime
 from .one import OneStoreDownloader
 
-_FILE_TYPES = ["StoresFull", "Price", "Promo", "PriceFull", "PromoFull"]
+# Promo/PromoFull intentionally excluded — the backend discards promo files (ARCHITECTURE.md §4.2).
+_FILE_TYPES = ["StoresFull", "Price", "PriceFull"]
+
+
+def _fallback_timestamps():
+    # Hourly candidates over the last 26 hours — only used when the listing
+    # page cannot be scraped. A to-the-minute timestamp never matches a real file.
+    now = datetime.datetime.now()
+    return [
+        (now - datetime.timedelta(hours=h)).strftime("%Y%m%d%H") + "00"
+        for h in range(26)
+    ]
+
 
 _config = {
     "Url": "https://laibcatalog.co.il/",
@@ -27,7 +39,7 @@ _config = {
         "656", "657", "733", "734", "649", "711", "714", "715", "717", "718",
         "719", "721", "722", "702", "706", "707", "724", "725", "726", "727", "730",
     ],
-    "WDate": datetime.datetime.now().strftime("%Y%m%d%H%M"),
+    "WDate": _fallback_timestamps(),
 }
 
 

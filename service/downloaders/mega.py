@@ -39,13 +39,19 @@ class MegaStoreDownloader(StoreDownloader):
         date_path = path_match.group(1)
         all_files = json.loads(files_match.group(1))
 
-        # Filter to files belonging to this chain modified in the last 2 hours
+        # Filter to files belonging to this chain modified within the lookback
+        # window. Default 26h covers the full publishing day so every store's
+        # files are picked up even when the pipeline runs long after upload;
+        # the backend dedups already-processed files by name + size.
+        lookback_hours = float(
+            os.environ.get("LOOKBACK_HOURS", self.config.get("LookbackHours", 26))
+        )
         now = datetime.datetime.now()
-        cutoff = now - datetime.timedelta(hours=2)
+        cutoff = now - datetime.timedelta(hours=lookback_hours)
         allowed_prefixes = self.config.get("WFileTypePrefixes")
 
         def _is_recent(file_info):
-            """Parse 'HH:MM DD-MM-YYYY' and check if within last 2 hours."""
+            """Parse 'HH:MM DD-MM-YYYY' and check if within the lookback window."""
             try:
                 modified = datetime.datetime.strptime(file_info["modified"], "%H:%M %d-%m-%Y")
                 return modified >= cutoff
