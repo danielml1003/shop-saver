@@ -1,5 +1,6 @@
 // Shop-Saver service worker — cache-first for app shell, network-first for API.
-const CACHE = 'shop-saver-v1';
+// Bump on breaking app-shell changes so clients evict the stale cached bundle.
+const CACHE = 'shop-saver-v2';
 
 const APP_SHELL = [
   '/',

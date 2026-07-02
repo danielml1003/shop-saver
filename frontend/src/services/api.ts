@@ -8,7 +8,11 @@ import {
   PaginatedItemsResponse,
 } from '../types';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:3000';
+// Production build: same-origin relative URLs — nginx proxies /api/ to the backend.
+// Dev (npm start): talk to the locally running API directly; override with REACT_APP_API_URL.
+const API_BASE_URL =
+  process.env.REACT_APP_API_URL ??
+  (process.env.NODE_ENV === 'production' ? '' : 'http://127.0.0.1:3000');
 
 const api = axios.create({
   baseURL: API_BASE_URL,
