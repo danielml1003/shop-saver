@@ -21,11 +21,14 @@ FROM debian:bookworm-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libssl3 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --no-create-home appuser
 
 WORKDIR /app
 
 COPY --from=builder /app/target/release/backend ./shop-saver
+
+USER appuser
 
 EXPOSE 3000
 

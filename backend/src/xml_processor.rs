@@ -30,6 +30,21 @@ impl XmlFileProcessor {
             .map(|n| n.to_string_lossy().to_lowercase())
             .unwrap_or_default();
 
+        // Size cap on untrusted retailer XML so one huge/malicious file can't
+        // exhaust memory (ARCHITECTURE.md §5.2). Largest real PriceFull files
+        // are tens of MB uncompressed.
+        let max_bytes: u64 = std::env::var("XML_MAX_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(256 * 1024 * 1024);
+        let size = fs::metadata(file_path).await?.len();
+        if size > max_bytes {
+            return Err(anyhow::anyhow!(
+                "XML parsing error: file {} is {} bytes, over the {} byte cap",
+                filename, size, max_bytes
+            ));
+        }
+
         let content = fs::read_to_string(file_path).await?;
 
         if filename.contains("storesfull") || filename.contains("stores") {

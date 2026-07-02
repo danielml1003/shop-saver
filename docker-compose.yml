@@ -30,7 +30,9 @@ services:
     # Not exposed externally — nginx proxies /api/ to this container
 
   service:
-    build: ./service
+    build:
+      context: .
+      dockerfile: service/Dockerfile
     restart: unless-stopped
     depends_on:
       db:
