@@ -215,9 +215,36 @@ platform used by these chains has a listing mechanism:
    via `processed_files`.
 4. **Cerberus chains**: nothing to do — already full coverage. Delete the unused
    `StoreId` lists from `dor_alon.py`/`tiv_taam.py` so nobody thinks they matter.
-5. **Verification**: after one pipeline run, `SELECT chain_id, COUNT(*) FROM stores GROUP BY chain_id`
-   should roughly match each chain's real branch count; log per-chain
-   downloaded-file counts in `run_pipeline.sh` and alert when a chain returns 0 files.
+5. **Stop downloading Promo files.** Every chain config requests `Promo`/`PromoFull`,
+   but the backend skips them (`xml_processor.rs` marks them processed without parsing).
+   Roughly half the download bandwidth and time is spent on files that get thrown away —
+   trim every `WFileType` list to `StoresFull`, `Price`, `PriceFull`.
+6. **Per-chain observability**: log "chain X: N files downloaded" at the end of each
+   `run_pipeline.sh` run and alert when any chain returns 0 files. Retailers change their
+   sites without notice — a chain silently going to zero is the most common failure mode
+   in this domain, and it's invisible without this counter. Verify coverage with
+   `SELECT chain_id, COUNT(*) FROM stores GROUP BY chain_id` — the counts should roughly
+   match each chain's real branch count.
+7. **Fallback-first rollout**: implement discovery as the primary path and keep the current
+   URL-guessing as the fallback, so a broken listing endpoint degrades to today's behavior
+   instead of zero files. (Note: the retailer listing endpoints can't be reached from every
+   network/sandbox — verify each one with a real pipeline run on the target server.)
+
+### 4.2b Alternative: replace the downloaders with a maintained library
+
+Instead of maintaining 12 custom scrapers, consider the open-source
+**`il-supermarket-scraper`** package (PyPI; GitHub: `erlichsefi/israeli-supermarket-scrapers`).
+It already implements listing-based discovery for all the publishing platforms used here
+(binaprojects, Cerberus, Shufersal, laibcatalog, Carrefour and more), tracks retailer
+format changes, and covers additional chains this project doesn't have yet.
+
+- **What you'd keep**: only the glue that drops extracted XML into the watch directory —
+  the Rust backend doesn't care who downloaded the file.
+- **What you'd gain**: someone else absorbs the ongoing breakage when retailers change
+  their sites — the single biggest maintenance cost of this project.
+- **What you'd lose**: control over the download pattern, and the custom code as a
+  learning artifact. A reasonable middle ground: keep `service/downloaders/` but use the
+  library's source as the reference for each platform's listing endpoint and quirks.
 
 ### 4.3 Backend-side fixes (process everything that lands)
 
@@ -318,8 +345,9 @@ Do these right after Step 1, while the code is warm:
 2. `pg_trgm` index + collapse the compare N+1 into set-based queries. *(half a day, biggest runtime win)*
 3. sqlx migrations; decide items retention (upsert-latest + `price_history` table). *(a day)*
 4. Rename `ceberus` → `cerberus`; delete or wire `mega.py`/`one.py`. *(1 hour)*
-5. Implement full store coverage from §4 — dynamic file discovery in the service,
-   retry-on-transient-failure in the backend. *(1 day)*
+5. Implement full store coverage from §4 — first decide custom scrapers vs the
+   `il-supermarket-scraper` library (§4.2b); then either dynamic file discovery + promo
+   trimming in the service, or the library swap. Backend retry fix either way. *(1 day)*
 6. Add the security checks from §5.1 (CI workflow + local script) and work through the
    §5.2 checklist items. *(half a day for the workflow; checklist items are small PRs)*
 7. Add the test baseline from §3.5. *(1–2 days, pays for itself immediately)*
