@@ -1,5 +1,5 @@
 # ── Stage 1: build ────────────────────────────────────────────────────────────
-FROM rust:1.82-slim AS builder
+FROM rust:1.94-slim AS builder
 
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
@@ -12,6 +12,8 @@ RUN cargo build --release
 RUN rm -rf src
 
 COPY src ./src
+# migrations are embedded into the binary at compile time by sqlx::migrate!
+COPY migrations ./migrations
 # Touch main.rs so cargo knows source changed
 RUN touch src/main.rs
 RUN cargo build --release
