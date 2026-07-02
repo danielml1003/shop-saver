@@ -21,7 +21,7 @@ use api::create_router;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenv::dotenv().ok();
+    dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
     info!("🚀 Starting Shop Saver API Server");

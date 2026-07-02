@@ -24,14 +24,15 @@ fi
 
 section "Rust dependency audit (cargo audit)"
 if command -v cargo-audit >/dev/null 2>&1 || cargo audit --version >/dev/null 2>&1; then
-    if (cd "$ROOT/backend" && cargo audit); then ok "no known CVEs in Cargo.lock"; else fail "cargo audit reported vulnerabilities"; fi
+    # RUSTSEC-2023-0071: unfixable rsa advisory from sqlx's unused MySQL driver (never compiled)
+    if (cd "$ROOT/backend" && cargo audit --ignore RUSTSEC-2023-0071); then ok "no known CVEs in Cargo.lock"; else fail "cargo audit reported vulnerabilities"; fi
 else
     skip "cargo-audit not installed (cargo install cargo-audit)"
 fi
 
 section "Node dependency audit (npm audit)"
 if command -v npm >/dev/null 2>&1 && [ -d "$ROOT/frontend/node_modules" ]; then
-    if (cd "$ROOT/frontend" && npm audit --audit-level=high); then ok "no high/critical advisories"; else fail "npm audit reported high/critical advisories"; fi
+    if (cd "$ROOT/frontend" && npm audit --omit=dev --audit-level=high); then ok "no high/critical advisories in shipped deps"; else fail "npm audit reported high/critical advisories"; fi
 else
     skip "npm not installed or frontend/node_modules missing (run npm install first)"
 fi
