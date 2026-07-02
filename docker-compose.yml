@@ -39,6 +39,9 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/shop_saver
+      # keeps manual `docker compose exec service python3 main.py` runs writing
+      # into the volume the API watches (cron jobs set this in /etc/cron.d)
+      DOWNLOAD_DIR: /app/downloads
     volumes:
       - downloads:/app/downloads
 

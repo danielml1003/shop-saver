@@ -9,6 +9,7 @@ Categories fetched:
   catID=5  →  StoresFull (store metadata — address, name, etc.)
 """
 
+import html
 import os
 import re
 import datetime
@@ -39,7 +40,12 @@ def _fetch_page_links(session: requests.Session, cat_id: int, date_str: str, pag
     )
     resp.raise_for_status()
     # Signed Azure URLs look like: https://pricesprodpublic.blob.core.windows.net/...
-    return re.findall(r'href="(https://pricesprodpublic\.blob\.core\.windows\.net/[^"]+)"', resp.text)
+    # HTML escapes & as &amp; inside href attributes — unescape or the SAS
+    # signature in the query string is corrupted and every download 403s.
+    return [
+        html.unescape(u)
+        for u in re.findall(r'href="(https://pricesprodpublic\.blob\.core\.windows\.net/[^"]+)"', resp.text)
+    ]
 
 
 def _filename_from_url(url: str) -> str:
@@ -109,7 +115,8 @@ class Shufersal(StoreDownloader):
 
             print(f"\n  Downloading: {filename}")
             try:
-                dl = session.get(url, timeout=60, stream=True)
+                # fresh request — the listing session is closed by this point
+                dl = requests.get(url, timeout=60, stream=True, headers={"User-Agent": "Mozilla/5.0"})
                 dl.raise_for_status()
                 with open(local_path, "wb") as f:
                     for chunk in dl.iter_content(chunk_size=65536):
