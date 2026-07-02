@@ -38,9 +38,9 @@ Israeli retailer price feeds (XML published daily — gov. price-transparency la
 [REST API]  backend/src/api.rs
    GET  /health
    GET  /api/stores/nearby        — stores within a radius (haversine)
-   GET  /api/stores               — all stores (map page)          ← DB layer done, route pending
-   GET  /api/stores/:id/items     — paginated store inventory      ← DB layer done, route pending
-   GET  /api/items                — paginated cross-store search   ← pending
+   GET  /api/stores               — all stores (map page)
+   GET  /api/stores/:id/items     — paginated store inventory
+   GET  /api/items                — paginated cross-store search + price filters
    GET  /api/items/search         — autocomplete (name → barcode)
    POST /api/compare-prices       — basket vs all/nearby/city stores, paginated
         │
@@ -59,9 +59,8 @@ Israeli retailer price feeds (XML published daily — gov. price-transparency la
 | Piece | Role |
 |---|---|
 | `downloaders/base.py` | Abstract downloader: URL generation, download with retries/timeouts, magic-number detection of `.gz` / `.zip` / plain `.xml`, extraction, cleanup. |
-| `downloaders/original.py`, `one.py`, `ceberus.py`, `shufersal.py`, `carrefour.py`, … | Per-publishing-platform subclasses: "original"-type HTTP hosts, ZIP hosts, Cerberus FTP (Rami Levy, Yohananof, Osher Ad — some need active FTP mode), Shufersal's paginated Azure-blob listing, etc. |
+| `downloaders/original.py`, `one.py`, `cerberus.py`, `shufersal.py`, `carrefour.py`, … | Per-publishing-platform subclasses: binaprojects HTTP hosts (server-listing discovery via `MainIO_Hok.aspx`), laibcatalog listing scrape, Cerberus FTP (Rami Levy, Yohananof, Osher Ad — some need active FTP mode), Shufersal's paginated Azure-blob listing, Carrefour's embedded file listing. Per-chain config lives in each chain's module. |
 | `downloaders/__init__.py` | `ALL_CHAINS` — the 12 wired chains: King, Maayan, GoodPharm, DorAlon, TivTaam, Victory, ZolVeGadol, Carrefour, Shufersal, RamiLevy, Yohananof, OsherAd. |
-| `storesJsonUrl.py` | Per-retailer config dictionaries (base URL, chain ID, store IDs, timestamp format). |
 | `geocode_stores.py` | Fills NULL lat/lng in `stores` via Nominatim (full address → city fallback). Re-run safe. |
 | `run_pipeline.sh` + `cronjob` | Runs all downloaders then geocoding at 06:00 and 13:00; logs to `/var/log/shop-saver/`. |
 
@@ -135,9 +134,10 @@ Ordered roughly by importance.
    name). A 20-item basket = 20 round trips. Refactor to a single query using
    `item_code = ANY($1)` for barcodes and a joined `unnest()` of name patterns, grouping by
    `store_pk` to compute coverage in SQL.
-7. **Unindexed `LIKE '%…%'` name search.** Every fallback name match is a sequential scan over
-   `items` (millions of rows once all 12 chains ingest daily). Add the `pg_trgm` extension and a
-   GIN trigram index on `LOWER(item_name)`; the existing queries then use it with no code changes.
+7. ~~Unindexed `LIKE '%…%'` name search~~ — **already handled**: `database.rs` creates the
+   `pg_trgm` extension plus GIN trigram indexes on `LOWER(item_name)` and
+   `LOWER(canonical_name)`, and forces custom plans so the index is actually used.
+   (Correction: an earlier revision of this doc claimed the index was missing.)
 8. **Items table growth.** Daily full-price ingestion appends forever. Decide the retention policy:
    either upsert on `(store_pk, item_code)` keeping only the latest price, or keep history in a
    separate `price_history` table (needed anyway for the roadmap's price-history feature) and keep
@@ -291,23 +291,22 @@ Reviewed against the current code — status of each item:
 - [x] **SQL injection** — safe: every query in `database.rs`/`xml_processor.rs` uses sqlx
   bind parameters (`$1, $2…`); user input is never string-concatenated into SQL.
 - [x] **Secrets in git** — `.env` is gitignored; only `.env.example` templates are committed.
-- [ ] **CORS wide open** — `main.rs` uses `allow_origin(Any)`. In production nginx proxies
-  same-origin, so lock allowed origins down via an env var.
+- [x] **CORS** — restrictable via the `CORS_ALLOWED_ORIGINS` env var (comma-separated);
+  wide open only when unset (dev / same-origin nginx deployments).
 - [ ] **No rate limiting** — `POST /api/compare-prices` is expensive and unauthenticated;
   add `tower-governor` (or nginx `limit_req`) before public exposure.
-- [ ] **Input bounds** — cap `grocery_list` length (e.g. 100 items), string lengths, and
-  `radius_km`/`page_size` ranges in `api.rs`; currently only "non-empty" is checked.
-- [ ] **Untrusted XML** — retailer feeds are external input. `serde-xml-rs` doesn't expand
-  external entities (XXE-safe), but add a file-size cap before `read_to_string` so a huge
-  or malicious file can't exhaust memory.
-- [ ] **FTP credentials** — Cerberus usernames/passwords are the retailers' *published public*
-  credentials, but they live in source; move to env vars (as `dor_alon.py` already does)
-  so all credentials follow one pattern.
-- [ ] **TLS/headers at the edge** — put HTTPS in front (Caddy/Traefik/certbot) and add
-  `X-Content-Type-Options`, `X-Frame-Options`, and a CSP to `frontend/nginx.conf`.
-- [ ] **Docker hardening** — containers currently run as root; add non-root `USER`s to the
-  three Dockerfiles, and don't expose the API or Postgres ports on the host (already true
-  in `docker-compose.yml` — keep it that way).
+- [x] **Input bounds** — `api.rs` caps grocery-list length (100), term length (200),
+  radius (≤200 km), lat/lng ranges, and page size (≤100).
+- [x] **Untrusted XML** — `serde-xml-rs` doesn't expand external entities (XXE-safe), and
+  `xml_processor.rs` enforces a file-size cap (`XML_MAX_BYTES`, default 256 MB) before parsing.
+- [x] **FTP credentials** — all five Cerberus chains take passwords from env vars
+  (`RAMILEVY_FTP_PASSWORD` etc.), defaulting to the retailers' published public values.
+- [~] **TLS/headers at the edge** — `nginx.conf` now sends `X-Content-Type-Options`,
+  `X-Frame-Options`, `Referrer-Policy`, and a CSP. HTTPS termination (Caddy/Traefik/certbot)
+  still needs doing on the real server.
+- [x] **Docker hardening** — backend and pipeline containers run as non-root `appuser`;
+  API/Postgres ports are not exposed on the host. (nginx master runs as root per the
+  official image; workers drop privileges.)
 - [ ] **Geocoding privacy** — `geocode_stores.py` sends store addresses to Nominatim (fine,
   public data), but user coordinates from `/api/stores/nearby` must never be logged or
   sent to third parties; audit `TraceLayer` log output.
@@ -319,38 +318,43 @@ Reviewed against the current code — status of each item:
 ### Step 1 — Finish the in-flight UI redesign (the active work)
 
 The plan in [`docs/plans/2026-03-10-ui-redesign.md`](docs/plans/2026-03-10-ui-redesign.md) is
-**3 of 18 tasks done** (models + `get_all_stores()` + `get_store_items()` are committed). Remaining,
-in order — each task in the plan has exact code, verification commands, and a commit message:
+**complete** — all 18 tasks implemented:
 
-- [ ] **Task 4** — `search_items_paginated()` in `database.rs`
-- [ ] **Task 5** — `compare_prices()` city filter + location∩items intersection helper
-- [ ] **Task 6** — register the 3 new routes in `api.rs` (`GET /api/stores`, `GET /api/stores/:id/items`, `GET /api/items`) + smoke test with curl
-- [ ] **Task 7** — `npm install react-leaflet leaflet @types/leaflet`
-- [ ] **Task 8–9** — frontend types + `apiService` methods for the new endpoints
-- [ ] **Task 10** — CartContext switches to `GroceryItem[]` (barcode + name)
-- [ ] **Task 11** — Header redesign (sticky bar, active underline, mobile bottom nav)
-- [ ] **Task 12** — ComparePage: CartContext + auto-GPS on mount + city fallback input
-- [ ] **Task 13** — CartPage becomes a redirect to `/`
-- [ ] **Task 14** — StoresPage rewrite with react-leaflet map
-- [ ] **Task 15** — new StoreDetailPage (`/stores/:id`, infinite scroll, add-to-cart)
-- [ ] **Task 16** — ItemsPage wired to real `GET /api/items` (kills the mock data)
-- [ ] **Task 17** — routes in `App.tsx`
-- [ ] **Task 18** — full build + manual end-to-end verification checklist
+- [x] **Task 4** — `search_items_paginated()` in `database.rs`
+- [x] **Task 5** — `compare_prices()` city filter + location∩items intersection helper
+- [x] **Task 6** — the 3 new routes registered in `api.rs` (`GET /api/stores`, `GET /api/stores/:id/items`, `GET /api/items`)
+- [x] **Task 7** — react-leaflet + leaflet installed
+- [x] **Task 8–9** — frontend types + `apiService` methods for the new endpoints
+- [x] **Task 10** — CartContext switched to `GroceryItem[]` (barcode + name)
+- [x] **Task 11** — Header redesign (sticky bar, active underline, mobile bottom nav)
+- [x] **Task 12** — ComparePage: CartContext + auto-GPS on mount + city fallback input
+- [x] **Task 13** — CartPage redirects to `/`
+- [x] **Task 14** — StoresPage rewritten with react-leaflet map
+- [x] **Task 15** — StoreDetailPage (`/stores/:id`, infinite scroll, add-to-cart)
+- [x] **Task 16** — ItemsPage wired to real `GET /api/items` (mock data deleted)
+- [x] **Task 17** — routes in `App.tsx`
+- [x] **Task 18** — `cargo test`/`pytest`/`npm test` pass; `cargo build` + `npm run build` succeed.
+      *Remaining manual step:* the in-browser end-to-end checklist against a live database
+      (GPS prompt, map markers, compare flow) — requires a machine with real data.
 
 ### Step 2 — Clean up (from §3)
 
-Do these right after Step 1, while the code is warm:
+Status:
 
-1. Delete `main_new.rs`; strip mocks from `api.ts`; rewrite `README.md`. *(1 hour)*
-2. `pg_trgm` index + collapse the compare N+1 into set-based queries. *(half a day, biggest runtime win)*
-3. sqlx migrations; decide items retention (upsert-latest + `price_history` table). *(a day)*
-4. Rename `ceberus` → `cerberus`; delete or wire `mega.py`/`one.py`. *(1 hour)*
-5. Implement full store coverage from §4 — first decide custom scrapers vs the
-   `il-supermarket-scraper` library (§4.2b); then either dynamic file discovery + promo
-   trimming in the service, or the library swap. Backend retry fix either way. *(1 day)*
-6. Add the security checks from §5.1 (CI workflow + local script) and work through the
-   §5.2 checklist items. *(half a day for the workflow; checklist items are small PRs)*
-7. Add the test baseline from §3.5. *(1–2 days, pays for itself immediately)*
+1. [x] Delete `main_new.rs`; strip mocks from `api.ts`; rewrite `README.md`.
+2. [x] ~~`pg_trgm` index~~ (already existed — see §3.2 correction).
+   [ ] Collapse the compare N+1 into set-based queries — still open (per-term queries
+   remain in `get_stores_with_items`/`get_stores_with_items_from_set`).
+3. [ ] sqlx migrations; decide items retention (upsert-latest + `price_history` table).
+4. [x] Rename `ceberus` → `cerberus`; `mega.py`/`one.py` are wired (Carrefour/Victory);
+   dead `storesJsonUrl.py` deleted.
+5. [x] Full store coverage from §4 implemented as dynamic discovery + promo trimming
+   (custom scrapers kept; §4.2b library swap remains an option). Backend retry fix in.
+6. [x] Security checks from §5.1 (CI workflow + local script) + most §5.2 items
+   (CORS env var, input bounds, XML size cap, security headers, non-root containers,
+   FTP creds via env vars).
+7. [x] Test baseline from §3.5: `cargo test` (EAN-13), `pytest` (extraction + URL
+   discovery), `npm test` (CartContext + app shell), all wired into CI.
 
 ### Step 3 — Go to production
 
