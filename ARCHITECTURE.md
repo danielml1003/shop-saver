@@ -293,8 +293,10 @@ Reviewed against the current code — status of each item:
 - [x] **Secrets in git** — `.env` is gitignored; only `.env.example` templates are committed.
 - [x] **CORS** — restrictable via the `CORS_ALLOWED_ORIGINS` env var (comma-separated);
   wide open only when unset (dev / same-origin nginx deployments).
-- [ ] **No rate limiting** — `POST /api/compare-prices` is expensive and unauthenticated;
-  add `tower-governor` (or nginx `limit_req`) before public exposure.
+- [x] **Rate limiting** — two layers: `tower_governor` per-IP token bucket in the API
+  (`RATE_LIMIT_RPS`/`RATE_LIMIT_BURST`, 0 disables) and nginx `limit_req` (10 r/s,
+  burst 20, 429) on `/api/`. Verified live: burst passes, then 429s, tokens replenish
+  at the configured rate.
 - [x] **Input bounds** — `api.rs` caps grocery-list length (100), term length (200),
   radius (≤200 km), lat/lng ranges, and page size (≤100).
 - [x] **Untrusted XML** — `serde-xml-rs` doesn't expand external entities (XXE-safe), and
@@ -343,9 +345,12 @@ Status:
 
 1. [x] Delete `main_new.rs`; strip mocks from `api.ts`; rewrite `README.md`.
 2. [x] ~~`pg_trgm` index~~ (already existed — see §3.2 correction).
-   [ ] Collapse the compare N+1 into set-based queries — still open (per-term queries
-   remain in `get_stores_with_items`/`get_stores_with_items_from_set`).
-3. [ ] sqlx migrations; decide items retention (upsert-latest + `price_history` table).
+   [x] Compare N+1 collapsed into one set-based coverage CTE
+   (`rank_stores_by_coverage`); verified live against Postgres 16.
+3. [x] Schema consolidated into `sqlx::migrate!` migrations (`backend/migrations/`);
+   items retention implemented: `items` = current price per (store, item) via upsert,
+   `price_history` accumulates the timeline (unblocks the price-history sparkline).
+   Verified on both fresh and pre-existing databases.
 4. [x] Rename `ceberus` → `cerberus`; `mega.py`/`one.py` are wired (Carrefour/Victory);
    dead `storesJsonUrl.py` deleted.
 5. [x] Full store coverage from §4 implemented as dynamic discovery + promo trimming
@@ -379,9 +384,18 @@ The project is "finished" (v1.0) when:
 2. Zero mock data anywhere in `frontend/src/services/api.ts`.
 3. The pipeline runs unattended for a week on a real server with all 12 chains ingesting,
    and a failure of any downloader produces an alert instead of silence.
-4. **Every store of every chain is covered** — the §4.2 discovery fixes are in, the §4.3
-   backend retry fix is in, and the per-chain store counts in the DB match reality.
-5. A compare of a 20-item basket over the full dataset responds in under ~1s (needs §3 items 6–7).
-6. **The security workflow (§5.1) is green and required on `main`**, and every unchecked
-   item in the §5.2 checklist is either fixed or consciously accepted.
-7. `cargo test`, `pytest`, and `npm test` all exist and pass in CI.
+4. **Every store of every chain is covered** — the §4.2 discovery fixes are in ✓, the §4.3
+   backend retry fix is in ✓; per-chain store counts vs reality need one real pipeline run.
+5. A compare of a 20-item basket over the full dataset responds in under ~1s — the
+   structural fixes (set-based coverage query ✓, trigram indexes ✓, current-prices-only
+   `items` table ✓) are in; benchmark on the full dataset to confirm.
+6. **The security workflow (§5.1) is green and required on `main`** — workflows are
+   committed ✓; marking them *required* is a GitHub branch-protection setting only the
+   repo owner can toggle. All §5.2 items fixed except HTTPS termination (server-side task).
+7. `cargo test` (4), `pytest` (10), and `npm test` (5) exist, pass locally ✓, and run in
+   CI (`.github/workflows/ci.yml`).
+
+**Remaining items that require the real server / repo owner** (not doable from a sandbox):
+in-browser end-to-end pass with production data, a week of unattended pipeline runs against
+the live retailer endpoints, HTTPS termination, GitHub branch protection, and marking the
+security workflow required.
