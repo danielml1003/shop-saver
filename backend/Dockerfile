@@ -12,6 +12,8 @@ RUN cargo build --release
 RUN rm -rf src
 
 COPY src ./src
+# migrations are embedded into the binary at compile time by sqlx::migrate!
+COPY migrations ./migrations
 # Touch main.rs so cargo knows source changed
 RUN touch src/main.rs
 RUN cargo build --release
