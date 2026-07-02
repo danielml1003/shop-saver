@@ -98,3 +98,23 @@ def test_all_chains_have_promo_free_file_types():
         chain = chain_cls()
         for ft in chain.config.get("WFileType", []):
             assert "Promo" not in ft, f"{chain_cls.__name__} still requests {ft}"
+
+
+def test_shufersal_listing_urls_are_html_unescaped():
+    from downloaders import shufersal
+
+    class _Resp:
+        text = ('<a href="https://pricesprodpublic.blob.core.windows.net/f/'
+                'PriceFull7290027600007-001-202607020600.gz?sig=abc&amp;se=2026">x</a>')
+        def raise_for_status(self):
+            pass
+
+    class _Session:
+        def get(self, *a, **k):
+            return _Resp()
+
+    links = shufersal._fetch_page_links(_Session(), 2, "2026-07-01", 1)
+    assert links == [
+        "https://pricesprodpublic.blob.core.windows.net/f/"
+        "PriceFull7290027600007-001-202607020600.gz?sig=abc&se=2026"
+    ]

@@ -10,6 +10,12 @@ class CerberusStoreDownloader(StoreDownloader):
     def _generate_urls(self):
         return []  # not used; process_store overrides entirely
 
+    def _open_ftp(self, username, password, active):
+        ftp = ftplib.FTP(self.FTP_HOST, timeout=60)
+        ftp.login(username, password)
+        ftp.set_pasv(not active)
+        return ftp
+
     def process_store(self):
         username = self.config["ftp_username"]
         password = self.config.get("ftp_password", username)
@@ -22,15 +28,27 @@ class CerberusStoreDownloader(StoreDownloader):
 
         print(f"\nProcessing Store (FTP): {chain_id}")
 
-        use_active = self.config.get("ftp_active_mode", False)
-        try:
-            with ftplib.FTP(self.FTP_HOST) as ftp:
-                ftp.login(username, password)
-                if use_active:
-                    ftp.set_pasv(False)
-                all_files = ftp.nlst()
-        except ftplib.all_errors as e:
-            print(f"FTP listing error for {chain_id}: {e}")
+        # Try the configured mode first, then the other one. Active mode fails
+        # behind NAT (e.g. inside Docker: '500 Port command invalid'); passive
+        # mode is blocked on some direct networks — so neither can be pinned.
+        preferred_active = self.config.get("ftp_active_mode", False)
+        modes = (preferred_active, not preferred_active)
+
+        all_files = None
+        working_mode = None
+        for active in modes:
+            mode_name = "active" if active else "passive"
+            try:
+                with self._open_ftp(username, password, active) as ftp:
+                    all_files = ftp.nlst()
+                working_mode = active
+                print(f"  FTP listing OK in {mode_name} mode ({len(all_files)} entries).")
+                break
+            except ftplib.all_errors as e:
+                print(f"  FTP {mode_name} mode failed for {chain_id}: {e}")
+
+        if all_files is None:
+            print(f"FTP listing error for {chain_id}: both modes failed")
             return
 
         matching = [
@@ -45,10 +63,7 @@ class CerberusStoreDownloader(StoreDownloader):
             local_path = os.path.join(self.download_dir, filename)
             print(f"\n  Downloading: {filename}")
             try:
-                with ftplib.FTP(self.FTP_HOST) as ftp:
-                    ftp.login(username, password)
-                    if use_active:
-                        ftp.set_pasv(False)
+                with self._open_ftp(username, password, working_mode) as ftp:
                     with open(local_path, "wb") as f:
                         ftp.retrbinary(f"RETR {filename}", f.write)
                 extracted = self._extract_file(local_path)
