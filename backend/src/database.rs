@@ -1,7 +1,7 @@
 use sqlx::{PgPool, Executor, Row};
 use crate::models::{PriceComparisonRequest, PriceComparisonResponse, StoreInfo, ItemPrice, StoreComparison, StoreRecord, ProductSearchResult, StoreItemRow};
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Returns true if `code` is a valid EAN-13 barcode (13 digits + correct check digit).
 pub fn is_ean13(code: &str) -> bool {
@@ -40,160 +40,10 @@ impl DatabaseManager {
             .connect(database_url)
             .await?;
 
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS stores (
-                id SERIAL PRIMARY KEY,
-                chain_id VARCHAR NOT NULL,
-                sub_chain_id INTEGER NOT NULL,
-                store_id INTEGER NOT NULL,
-                bikoret_no INTEGER,
-                latitude DECIMAL(10, 8),
-                longitude DECIMAL(11, 8),
-                address TEXT,
-                city VARCHAR(100),
-                country VARCHAR(100),
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                UNIQUE(chain_id, sub_chain_id, store_id)
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS items (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                store_pk INTEGER REFERENCES stores(id),
-                item_code VARCHAR NOT NULL,
-                item_type INTEGER NOT NULL,
-                item_name VARCHAR NOT NULL,
-                manufacturer_name VARCHAR,
-                manufacture_country VARCHAR,
-                manufacturer_item_description VARCHAR,
-                unit_qty VARCHAR,
-                quantity VARCHAR,
-                unit_of_measure VARCHAR,
-                is_weighted INTEGER,
-                qty_in_package VARCHAR,
-                item_price DECIMAL(10,4) NOT NULL,
-                unit_of_measure_price DECIMAL(10,4),
-                allow_discount INTEGER,
-                item_status INTEGER,
-                price_update_date TIMESTAMP,
-                processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                file_source VARCHAR,
-                UNIQUE(store_pk, item_code, price_update_date)
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        // Canonical product catalog — one row per unique EAN-13 barcode.
-        // Populated automatically during XML ingest.
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS products (
-                barcode VARCHAR(13) PRIMARY KEY,
-                canonical_name VARCHAR NOT NULL,
-                manufacturer VARCHAR,
-                quantity VARCHAR,
-                unit_of_measure VARCHAR,
-                first_seen_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_stores_location ON stores(latitude, longitude)
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        // Add new columns if they don't exist yet (idempotent migrations)
-        sqlx::query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS store_name VARCHAR(200)")
-            .execute(&pool)
-            .await?;
-        sqlx::query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS zip_code VARCHAR(20)")
-            .execute(&pool)
-            .await?;
-
-        // Enable trigram extension for fast LIKE '%...%' substring searches
-        sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_trgm")
-            .execute(&pool)
-            .await?;
-        // GIN trigram index on items for name search
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_items_lower_name_trgm ON items USING gin (LOWER(item_name) gin_trgm_ops)"
-        )
-        .execute(&pool)
-        .await?;
-        // GIN trigram index on products for autocomplete
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_products_lower_name_trgm ON products USING gin (LOWER(canonical_name) gin_trgm_ops)"
-        )
-        .execute(&pool)
-        .await?;
-
-        // Table to track which XML files have been fully processed — prevents re-scanning on restart
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS processed_files (
-                filename VARCHAR PRIMARY KEY,
-                file_size BIGINT NOT NULL,
-                processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-            )
-            "#
-        )
-        .execute(&pool)
-        .await?;
-
-        // Known chain ID → Hebrew display name mapping.
-        // Used as a fallback when store_name is NULL (before StoresFull XML is ingested).
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS chain_names (
-                chain_id VARCHAR PRIMARY KEY,
-                display_name VARCHAR NOT NULL
-            )
-            "#
-        )
-        .execute(&pool)
-        .await?;
-
-        let chain_data: &[(&str, &str)] = &[
-            ("7290027600007", "שופרסל"),
-            ("7290058140886", "רמי לוי"),
-            ("7290055700007", "קרפור"),
-            ("7290058108879", "קינג סטור"),
-            ("7290058159628", "מעיין 2000"),
-            ("7290058197699", "גוד פארם"),
-            ("7290492000005", "דור אלון"),
-            ("7290873255550", "טיב טעם"),
-            ("7290696200003", "ויקטורי"),
-            ("7290058173198", "זול ובגדול"),
-            ("7290803800003", "יוחננוף"),
-            ("7290695900006", "אושר עד"),
-            ("7290633800006", "AM:PM"),
-            ("7290876100000", "חצי חינם"),
-            ("7290011900477", "סופר-פארם"),
-        ];
-        for (chain_id, display_name) in chain_data {
-            sqlx::query(
-                "INSERT INTO chain_names (chain_id, display_name) VALUES ($1, $2) \
-                 ON CONFLICT (chain_id) DO UPDATE SET display_name = EXCLUDED.display_name"
-            )
-            .bind(chain_id)
-            .bind(display_name)
-            .execute(&pool)
-            .await?;
-        }
+        // All schema management lives in backend/migrations/ (ARCHITECTURE.md §3.1).
+        // Statements are IF NOT EXISTS-based so existing databases created by
+        // older app versions migrate cleanly.
+        sqlx::migrate!("./migrations").run(&pool).await?;
 
         Ok(Self { pool })
     }
@@ -204,7 +54,8 @@ impl DatabaseManager {
             SELECT
                 s.id, s.chain_id, s.sub_chain_id, s.store_id,
                 COALESCE(s.store_name, cn.display_name) as store_name,
-                s.address, s.city, s.latitude, s.longitude,
+                s.address, s.city,
+                s.latitude::float8 as latitude, s.longitude::float8 as longitude,
                 6371 * acos(cos(radians($1)) * cos(radians(s.latitude))
                     * cos(radians(s.longitude) - radians($2))
                     + sin(radians($1)) * sin(radians(s.latitude))) as distance_km
@@ -315,73 +166,156 @@ impl DatabaseManager {
         Ok((items, total as usize))
     }
 
-    // Returns stores that carry at least one of the requested items, ordered by coverage.
-    // Handles barcodes (exact match) and name terms (LIKE) separately so each can use its index.
-    pub async fn get_stores_with_items(
+    /// Returns paginated items across all stores, DISTINCT by item name (cheapest price per name).
+    /// Supports optional query string and price range filters.
+    pub async fn search_items_paginated(
+        &self,
+        query: &str,
+        min_price: Option<f64>,
+        max_price: Option<f64>,
+        page: usize,
+        limit: usize,
+    ) -> Result<(Vec<StoreItemRow>, usize)> {
+        let offset = ((page.saturating_sub(1)) * limit) as i64;
+        let pattern = if query.is_empty() {
+            "%".to_string()
+        } else {
+            format!("%{}%", query.to_lowercase())
+        };
+
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT LOWER(item_name)) FROM items \
+             WHERE LOWER(item_name) LIKE $1 \
+               AND ($2::float8 IS NULL OR item_price::float8 >= $2) \
+               AND ($3::float8 IS NULL OR item_price::float8 <= $3)"
+        )
+        .bind(&pattern)
+        .bind(min_price)
+        .bind(max_price)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let rows = sqlx::query(
+            "SELECT DISTINCT ON (LOWER(item_name)) \
+                    item_code, item_name, manufacturer_name, \
+                    item_price::float8 as item_price, unit_of_measure, quantity \
+             FROM items \
+             WHERE LOWER(item_name) LIKE $1 \
+               AND ($2::float8 IS NULL OR item_price::float8 >= $2) \
+               AND ($3::float8 IS NULL OR item_price::float8 <= $3) \
+             ORDER BY LOWER(item_name), item_price ASC \
+             LIMIT $4 OFFSET $5"
+        )
+        .bind(&pattern)
+        .bind(min_price)
+        .bind(max_price)
+        .bind(limit as i64)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let items = rows.into_iter().map(|row| StoreItemRow {
+            item_code: row.get("item_code"),
+            item_name: row.get("item_name"),
+            manufacturer_name: row.get("manufacturer_name"),
+            item_price: row.get("item_price"),
+            unit_of_measure: row.get("unit_of_measure"),
+            quantity: row.get("quantity"),
+        }).collect();
+
+        Ok((items, total as usize))
+    }
+
+    /// Returns stores that carry at least one of the requested items, ordered by how many
+    /// list terms they cover (then store id). `candidate_ids` optionally restricts the
+    /// search to a pre-filtered set (nearby / city stores).
+    ///
+    /// One set-based query computes coverage for the whole grocery list: barcodes match
+    /// `item_code = ANY(..)`, name terms match via `unnest`-joined LIKE patterns — no
+    /// per-term round trips (ARCHITECTURE.md §3.2).
+    async fn rank_stores_by_coverage(
         &self,
         grocery_list: &[String],
+        candidate_ids: Option<&[i32]>,
         page: usize,
         page_size: usize,
     ) -> Result<(Vec<StoreInfo>, usize)> {
         if grocery_list.is_empty() {
             return Ok((vec![], 0));
         }
+        if matches!(candidate_ids, Some(ids) if ids.is_empty()) {
+            return Ok((vec![], 0));
+        }
 
         let (barcodes, name_terms): (Vec<&String>, Vec<&String>) = grocery_list
             .iter()
             .partition(|s| is_ean13(s));
-
-        let mut term_store_sets: Vec<HashSet<i32>> = Vec::new();
-
-        // Barcode terms — exact item_code lookup
-        for barcode in &barcodes {
-            let store_ids: Vec<i32> = sqlx::query_scalar(
-                "SELECT DISTINCT store_pk FROM items WHERE item_code = $1"
-            )
-            .bind(barcode.as_str())
-            .fetch_all(&self.pool)
-            .await?;
-            term_store_sets.push(store_ids.into_iter().collect());
-        }
-
-        // Name terms — LIKE via trigram index
-        for term in &name_terms {
-            let pattern = format!("%{}%", term.to_lowercase());
-            let store_ids: Vec<i32> = sqlx::query_scalar(
-                "SELECT DISTINCT store_pk FROM items WHERE LOWER(item_name) LIKE $1"
-            )
-            .bind(&pattern)
-            .fetch_all(&self.pool)
-            .await?;
-            term_store_sets.push(store_ids.into_iter().collect());
-        }
-
-        let all_ids: HashSet<i32> = term_store_sets.iter()
-            .flat_map(|s| s.iter().cloned())
+        let barcode_vals: Vec<String> = barcodes.iter().map(|s| s.to_string()).collect();
+        let patterns: Vec<String> = name_terms.iter()
+            .map(|t| format!("%{}%", t.to_lowercase()))
             .collect();
+        let candidates: Option<Vec<i32>> = candidate_ids.map(|ids| ids.to_vec());
 
-        let mut coverage: Vec<(i32, usize)> = all_ids.iter().map(|&sid| {
-            let count = term_store_sets.iter().filter(|s| s.contains(&sid)).count();
-            (sid, count)
-        }).collect();
-        coverage.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let rows = sqlx::query(
+            "WITH matched AS ( \
+                SELECT DISTINCT store_pk, 'b:' || item_code AS term_key \
+                FROM items \
+                WHERE item_code = ANY($1) \
+                  AND ($3::int4[] IS NULL OR store_pk = ANY($3)) \
+                UNION \
+                SELECT DISTINCT i.store_pk, 'n:' || p.pattern AS term_key \
+                FROM items i \
+                JOIN unnest($2::text[]) AS p(pattern) \
+                  ON LOWER(i.item_name) LIKE p.pattern \
+                WHERE ($3::int4[] IS NULL OR i.store_pk = ANY($3)) \
+             ) \
+             SELECT store_pk, COUNT(*) AS coverage, COUNT(*) OVER () AS total_stores \
+             FROM matched \
+             GROUP BY store_pk \
+             ORDER BY coverage DESC, store_pk ASC \
+             LIMIT $4 OFFSET $5"
+        )
+        .bind(&barcode_vals)
+        .bind(&patterns)
+        .bind(&candidates)
+        .bind(page_size as i64)
+        .bind(((page - 1) * page_size) as i64)
+        .fetch_all(&self.pool)
+        .await?;
 
-        let total = all_ids.len();
-        let offset = (page - 1) * page_size;
-        let page_ids: Vec<i32> = coverage.into_iter()
-            .skip(offset)
-            .take(page_size)
-            .map(|(id, _)| id)
-            .collect();
+        let total = rows.first()
+            .map(|r| r.get::<i64, _>("total_stores") as usize)
+            .unwrap_or(0);
+        let page_ids: Vec<i32> = rows.iter().map(|r| r.get("store_pk")).collect();
 
         if page_ids.is_empty() {
-            return Ok((vec![], total));
+            // Past the last page: recount so has_more stays correct.
+            let total: i64 = sqlx::query_scalar(
+                "WITH matched AS ( \
+                    SELECT DISTINCT store_pk FROM items \
+                    WHERE item_code = ANY($1) \
+                      AND ($3::int4[] IS NULL OR store_pk = ANY($3)) \
+                    UNION \
+                    SELECT DISTINCT i.store_pk \
+                    FROM items i \
+                    JOIN unnest($2::text[]) AS p(pattern) \
+                      ON LOWER(i.item_name) LIKE p.pattern \
+                    WHERE ($3::int4[] IS NULL OR i.store_pk = ANY($3)) \
+                 ) SELECT COUNT(*) FROM matched"
+            )
+            .bind(&barcode_vals)
+            .bind(&patterns)
+            .bind(&candidates)
+            .fetch_one(&self.pool)
+            .await?;
+            return Ok((vec![], total as usize));
         }
 
         let rows = sqlx::query(
             "SELECT s.id, s.chain_id, s.sub_chain_id, s.store_id, \
                     COALESCE(s.store_name, cn.display_name) as store_name, \
-                    s.address, s.city \
+                    s.address, s.city, \
+                    s.latitude::float8 as latitude, s.longitude::float8 as longitude \
              FROM stores s \
              LEFT JOIN chain_names cn ON s.chain_id = cn.chain_id \
              WHERE s.id = ANY($1)"
@@ -400,8 +334,8 @@ impl DatabaseManager {
                 store_name: row.get("store_name"),
                 address: row.get("address"),
                 city: row.get("city"),
-                latitude: None,
-                longitude: None,
+                latitude: row.get("latitude"),
+                longitude: row.get("longitude"),
                 distance_km: None,
             })
         }).collect();
@@ -411,6 +345,16 @@ impl DatabaseManager {
             .collect();
 
         Ok((stores, total))
+    }
+
+    // Returns stores that carry at least one of the requested items, ordered by coverage.
+    pub async fn get_stores_with_items(
+        &self,
+        grocery_list: &[String],
+        page: usize,
+        page_size: usize,
+    ) -> Result<(Vec<StoreInfo>, usize)> {
+        self.rank_stores_by_coverage(grocery_list, None, page, page_size).await
     }
 
     /// Search for items matching `query`. Returns results with a barcode when the item is a
@@ -549,13 +493,16 @@ impl DatabaseManager {
         Ok(by_store)
     }
 
-    pub async fn find_items_in_store(&self, store_id: i32, grocery_list: &[String]) -> Result<Vec<ItemPrice>> {
-        let by_store = self.find_items_for_stores(&[store_id], grocery_list).await?;
-        Ok(by_store
-            .into_values()
-            .next()
-            .map(|m| m.into_values().collect())
-            .unwrap_or_default())
+    /// Like get_stores_with_items but pre-filtered to a set of candidate store IDs.
+    /// Used when a location or city pre-filter has already determined the candidate set.
+    async fn get_stores_with_items_from_set(
+        &self,
+        grocery_list: &[String],
+        candidate_ids: &[i32],
+        page: usize,
+        page_size: usize,
+    ) -> Result<(Vec<StoreInfo>, usize)> {
+        self.rank_stores_by_coverage(grocery_list, Some(candidate_ids), page, page_size).await
     }
 
     pub async fn compare_prices(&self, request: PriceComparisonRequest) -> Result<PriceComparisonResponse> {
@@ -563,12 +510,20 @@ impl DatabaseManager {
         let page_size = request.page_size.unwrap_or(10).max(1).min(50);
 
         let (stores, total_stores) = if let Some(ref loc) = request.user_location {
+            // Get IDs of all stores within radius, then intersect with item-carrying stores
             let radius_km = loc.radius_km.unwrap_or(10.0);
-            let all = self.get_nearby_stores(loc.latitude, loc.longitude, radius_km).await?;
-            let total = all.len();
-            let offset = (page - 1) * page_size;
-            let paged: Vec<_> = all.into_iter().skip(offset).take(page_size).collect();
-            (paged, total)
+            let nearby = self.get_nearby_stores(loc.latitude, loc.longitude, radius_km).await?;
+            let nearby_ids: Vec<i32> = nearby.iter().map(|s| s.id).collect();
+            self.get_stores_with_items_from_set(&request.grocery_list, &nearby_ids, page, page_size).await?
+        } else if let Some(ref city) = request.city {
+            // Get IDs of all stores in that city, then intersect with item-carrying stores
+            let city_ids: Vec<i32> = sqlx::query_scalar(
+                "SELECT id FROM stores WHERE LOWER(city) LIKE $1"
+            )
+            .bind(format!("%{}%", city.to_lowercase()))
+            .fetch_all(&self.pool)
+            .await?;
+            self.get_stores_with_items_from_set(&request.grocery_list, &city_ids, page, page_size).await?
         } else {
             self.get_stores_with_items(&request.grocery_list, page, page_size).await?
         };
@@ -707,5 +662,38 @@ impl DatabaseManager {
     pub(crate) fn parse_datetime(&self, datetime_str: &str) -> Result<chrono::NaiveDateTime> {
         chrono::NaiveDateTime::parse_from_str(datetime_str, "%Y-%m-%d %H:%M:%S")
             .map_err(|e| anyhow::anyhow!("Failed to parse datetime '{}': {}", datetime_str, e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_ean13;
+
+    #[test]
+    fn valid_ean13_barcodes() {
+        // EAN-13 codes with correct check digits
+        assert!(is_ean13("7290000066769"));
+        assert!(is_ean13("7290027600007"));
+        assert!(is_ean13("4006381333931"));
+    }
+
+    #[test]
+    fn wrong_check_digit_rejected() {
+        assert!(!is_ean13("7290000066768"));
+        assert!(!is_ean13("4006381333930"));
+    }
+
+    #[test]
+    fn wrong_length_rejected() {
+        assert!(!is_ean13(""));
+        assert!(!is_ean13("729000006676"));    // 12 digits
+        assert!(!is_ean13("72900000667680"));  // 14 digits
+    }
+
+    #[test]
+    fn non_digits_rejected() {
+        assert!(!is_ean13("729000006676a"));
+        assert!(!is_ean13("חלב תנובה 1 ל"));
+        assert!(!is_ean13("7290-00006676"));
     }
 }

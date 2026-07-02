@@ -30,6 +30,21 @@ impl XmlFileProcessor {
             .map(|n| n.to_string_lossy().to_lowercase())
             .unwrap_or_default();
 
+        // Size cap on untrusted retailer XML so one huge/malicious file can't
+        // exhaust memory (ARCHITECTURE.md §5.2). Largest real PriceFull files
+        // are tens of MB uncompressed.
+        let max_bytes: u64 = std::env::var("XML_MAX_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(256 * 1024 * 1024);
+        let size = fs::metadata(file_path).await?.len();
+        if size > max_bytes {
+            return Err(anyhow::anyhow!(
+                "XML parsing error: file {} is {} bytes, over the {} byte cap",
+                filename, size, max_bytes
+            ));
+        }
+
         let content = fs::read_to_string(file_path).await?;
 
         if filename.contains("storesfull") || filename.contains("stores") {
@@ -100,13 +115,21 @@ impl XmlFileProcessor {
             match self.process_xml_file(&path).await {
                 Ok(_) => {
                     processed += 1;
+                    if let Err(e) = self.db_manager.mark_file_processed(&filename, file_size).await {
+                        error!("Error marking file as processed {}: {}", filename, e);
+                    }
                 }
-                Err(e) => error!("Error processing existing file {:?}: {}", path, e),
-            }
-            // Mark as processed regardless of success or failure so we don't retry on restart.
-            // Promo/PromoFull files have a different XML format and will always fail — no sense retrying.
-            if let Err(e) = self.db_manager.mark_file_processed(&filename, file_size).await {
-                error!("Error marking file as processed {}: {}", filename, e);
+                Err(e) => {
+                    error!("Error processing existing file {:?}: {}", path, e);
+                    // Parse errors are permanent — the file will never succeed, so mark it
+                    // done to avoid retry loops. Transient failures (DB connectivity etc.)
+                    // stay unmarked so the next scan retries them.
+                    if e.to_string().contains("parsing error") {
+                        if let Err(e2) = self.db_manager.mark_file_processed(&filename, file_size).await {
+                            error!("Error marking unparseable file {}: {}", filename, e2);
+                        }
+                    }
+                }
             }
         }
 
@@ -146,8 +169,16 @@ impl XmlFileProcessor {
                         if let EventKind::Create(_) | EventKind::Modify(_) = event.kind {
                             for path in event.paths {
                                 if path.extension().and_then(|s| s.to_str()) == Some("xml") {
+                                    // Promo files have a different XML schema and are not ingested —
+                                    // skip them here just like the startup scan does.
+                                    let fname_lower = path.file_name()
+                                        .map(|n| n.to_string_lossy().to_lowercase())
+                                        .unwrap_or_default();
+                                    if fname_lower.contains("promo") {
+                                        continue;
+                                    }
                                     info!("New/modified XML file detected: {:?}", path);
-                                    
+
                                     let path_clone = path.clone();
                                     let db_for_task = db_clone.clone();
                                     let dir_for_task = watch_dir.clone();
@@ -271,15 +302,17 @@ impl XmlFileProcessor {
 
     async fn insert_item(&self, store_pk: i32, item: &Item, file_source: &str) -> Result<u64> {
         let price_update_date = self.db_manager.parse_datetime(&item.price_update_date)?;
-        
+
         let item_price: f64 = item.item_price.parse()
             .map_err(|_| anyhow::anyhow!("Invalid item price: {}", item.item_price))?;
-        
+
         let unit_of_measure_price: Option<f64> = item.unit_of_measure_price
             .as_ref()
             .and_then(|price| price.parse().ok());
 
-        sqlx::query(
+        // items keeps only the current price per (store, item); the full
+        // price timeline goes to price_history (ARCHITECTURE.md §3.2 item 8).
+        let rows = sqlx::query(
             r#"
             INSERT INTO items (
                 store_pk, item_code, item_type, item_name, manufacturer_name,
@@ -289,7 +322,16 @@ impl XmlFileProcessor {
                 price_update_date, file_source
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-            ON CONFLICT (store_pk, item_code, price_update_date) DO NOTHING
+            ON CONFLICT (store_pk, item_code) DO UPDATE SET
+                item_name = EXCLUDED.item_name,
+                manufacturer_name = EXCLUDED.manufacturer_name,
+                item_price = EXCLUDED.item_price,
+                unit_of_measure_price = EXCLUDED.unit_of_measure_price,
+                item_status = EXCLUDED.item_status,
+                price_update_date = EXCLUDED.price_update_date,
+                processed_at = NOW(),
+                file_source = EXCLUDED.file_source
+            WHERE EXCLUDED.price_update_date >= items.price_update_date
             "#,
         )
         .bind(store_pk)
@@ -312,7 +354,20 @@ impl XmlFileProcessor {
         .bind(file_source)
         .execute(&self.db_manager.pool)
         .await
-        .map(|r| r.rows_affected())
-        .map_err(anyhow::Error::from)
+        .map(|r| r.rows_affected())?;
+
+        sqlx::query(
+            "INSERT INTO price_history (store_pk, item_code, item_price, price_update_date) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (store_pk, item_code, price_update_date) DO NOTHING"
+        )
+        .bind(store_pk)
+        .bind(&item.item_code)
+        .bind(item_price)
+        .bind(price_update_date)
+        .execute(&self.db_manager.pool)
+        .await?;
+
+        Ok(rows)
     }
 }

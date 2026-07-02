@@ -1,7 +1,8 @@
 import datetime
 from .original import OriginalStoreDownloader
 
-_FILE_TYPES = ["Price", "Promo", "PriceFull", "PromoFull"]  # StoresFull not published by this chain
+# Promo/PromoFull intentionally excluded — the backend discards promo files (ARCHITECTURE.md §4.2).
+_FILE_TYPES = ["Price", "PriceFull"]  # StoresFull not published by this chain
 
 
 def _recent_timestamps():

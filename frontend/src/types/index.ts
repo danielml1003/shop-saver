@@ -81,6 +81,7 @@ export interface PriceComparisonRequest {
   grocery_list: string[];
   page?: number;
   page_size?: number;
+  city?: string;
 }
 
 export interface BackendStoreInfo {
@@ -117,5 +118,23 @@ export interface PriceComparisonResponse {
   best_store?: StoreComparison;
   requested_items: string[];
   total_stores: number;
+  has_more: boolean;
+}
+
+// Returned by GET /api/stores/:id/items and GET /api/items
+export interface StoreItemRow {
+  item_code: string;
+  item_name: string;
+  manufacturer_name?: string;
+  item_price: number;
+  unit_of_measure?: string;
+  quantity?: string;
+}
+
+export interface PaginatedItemsResponse {
+  items: StoreItemRow[];
+  total: number;
+  page: number;
+  page_size: number;
   has_more: boolean;
 }

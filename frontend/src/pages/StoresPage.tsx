@@ -1,161 +1,119 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Container,
-  GridLegacy as Grid,
-  Typography,
-  Box,
-  CircularProgress,
-  Alert,
-  Card,
-  CardContent,
-  Chip,
+  Alert, Box, Card, CardActionArea, CardContent,
+  CircularProgress, Container, TextField, Typography,
 } from '@mui/material';
-import {
-  Store as StoreIcon,
-  LocationOn as LocationIcon,
-  AccessTime as TimeIcon,
-  Business as ChainIcon,
-} from '@mui/icons-material';
-import { Store } from '../types';
+import LocationOnIcon from '@mui/icons-material/LocationOn';
+import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import { useNavigate } from 'react-router-dom';
 import { apiService } from '../services/api';
+import { BackendStoreInfo } from '../types';
 
 const StoresPage: React.FC = () => {
-  const [stores, setStores] = useState<Store[]>([]);
+  const navigate = useNavigate();
+  const [stores, setStores] = useState<BackendStoreInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
 
   useEffect(() => {
-    loadStores();
+    apiService.getAllStores()
+      .then(setStores)
+      .catch(() => setError('שגיאה בטעינת החנויות'))
+      .finally(() => setLoading(false));
   }, []);
 
-  const loadStores = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const storesData = await apiService.getStores();
-      setStores(storesData);
-    } catch (err) {
-      setError('שגיאה בטעינת החנויות. אנא נסה שוב.');
-      console.error('Error loading stores:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const filtered = useMemo(() => {
+    if (!search.trim()) return stores;
+    const q = search.toLowerCase();
+    return stores.filter(s =>
+      (s.store_name ?? '').toLowerCase().includes(q) ||
+      (s.city ?? '').toLowerCase().includes(q)
+    );
+  }, [stores, search]);
 
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('he-IL');
-  };
-
-  const formatTime = (timeString: string) => {
-    return timeString.slice(0, 5); // HH:MM format
-  };
+  const mapStores = useMemo(
+    () => filtered.filter(s => s.latitude != null && s.longitude != null),
+    [filtered]
+  );
 
   if (loading) {
     return (
-      <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
-        <Box sx={{ display: 'flex', justifyContent: 'center', my: 4 }}>
-          <CircularProgress />
-        </Box>
-      </Container>
-    );
-  }
-
-  if (error) {
-    return (
-      <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
-        <Alert severity="error">{error}</Alert>
-      </Container>
+      <Box sx={{ display: 'flex', justifyContent: 'center', mt: 8 }}>
+        <CircularProgress />
+      </Box>
     );
   }
 
   return (
-    <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
-      <Typography variant="h4" component="h1" gutterBottom>
-        חנויות ורשתות
-      </Typography>
+    <Container maxWidth="lg" sx={{ mt: 3, mb: 8 }}>
+      <Typography variant="h5" fontWeight={700} sx={{ mb: 2 }}>חנויות ורשתות</Typography>
 
-      <Typography variant="body1" color="text.secondary" sx={{ mb: 4 }}>
-        רשימת החנויות הזמינות במערכת עם פרטי העדכון האחרון
-      </Typography>
+      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
-      {stores.length === 0 ? (
-        <Box sx={{ textAlign: 'center', my: 4 }}>
-          <Typography variant="h6" color="text.secondary">
-            לא נמצאו חנויות
-          </Typography>
+      {/* Map */}
+      {mapStores.length > 0 && (
+        <Box sx={{ height: 400, borderRadius: 2, overflow: 'hidden', mb: 3, border: '1px solid', borderColor: 'divider' }}>
+          <MapContainer
+            center={[mapStores[0].latitude!, mapStores[0].longitude!]}
+            zoom={8}
+            style={{ height: '100%', width: '100%' }}
+          >
+            <TileLayer
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
+            {mapStores.map(s => (
+              <Marker key={s.id} position={[s.latitude!, s.longitude!]}>
+                <Popup>
+                  <strong>{s.store_name || s.chain_id}</strong>
+                  <br />
+                  {[s.address, s.city].filter(Boolean).join(', ')}
+                  <br />
+                  <a href={`/stores/${s.id}`} onClick={e => { e.preventDefault(); navigate(`/stores/${s.id}`); }}>
+                    פרטים ומחירים
+                  </a>
+                </Popup>
+              </Marker>
+            ))}
+          </MapContainer>
         </Box>
-      ) : (
-        <Grid container spacing={3}>
-          {stores.map((store) => (
-            <Grid item xs={12} md={6} lg={4} key={store.id}>
-              <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-                <CardContent sx={{ flexGrow: 1 }}>
-                  {/* Store Name */}
-                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                    <StoreIcon sx={{ mr: 1, color: 'primary.main' }} />
-                    <Typography variant="h6" component="h3">
-                      {store.store_name}
-                    </Typography>
-                  </Box>
-
-                  {/* Chain Information */}
-                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                    <ChainIcon sx={{ mr: 1, fontSize: 16, color: 'text.secondary' }} />
-                    <Typography variant="body2" color="text.secondary">
-                      קוד רשת: {store.chain_id}
-                    </Typography>
-                  </Box>
-
-                  {/* Address */}
-                  <Box sx={{ display: 'flex', alignItems: 'flex-start', mb: 2 }}>
-                    <LocationIcon sx={{ mr: 1, fontSize: 16, color: 'text.secondary', mt: 0.2 }} />
-                    <Box>
-                      <Typography variant="body2" color="text.secondary">
-                        {store.address}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        {store.city}
-                        {store.zip_code && `, ${store.zip_code}`}
-                      </Typography>
-                    </Box>
-                  </Box>
-
-                  {/* Last Update */}
-                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                    <TimeIcon sx={{ mr: 1, fontSize: 16, color: 'text.secondary' }} />
-                    <Typography variant="body2" color="text.secondary">
-                      עדכון אחרון: {formatDate(store.last_update_date)} בשעה {formatTime(store.last_update_time)}
-                    </Typography>
-                  </Box>
-
-                  {/* Store Details Chips */}
-                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 'auto' }}>
-                    <Chip 
-                      label={`סניף ${store.store_id}`} 
-                      size="small" 
-                      variant="outlined" 
-                    />
-                    <Chip 
-                      label={`תת-רשת ${store.subchain_id}`} 
-                      size="small" 
-                      variant="outlined" 
-                    />
-                  </Box>
-
-                  {/* Processed timestamp */}
-                  <Typography 
-                    variant="caption" 
-                    color="text.secondary" 
-                    sx={{ display: 'block', mt: 2 }}
-                  >
-                    נוסף למערכת: {formatDate(store.processed_at)}
-                  </Typography>
-                </CardContent>
-              </Card>
-            </Grid>
-          ))}
-        </Grid>
       )}
+
+      {/* Search */}
+      <TextField
+        fullWidth
+        size="small"
+        label="חפש לפי שם חנות או עיר"
+        value={search}
+        onChange={e => setSearch(e.target.value)}
+        sx={{ mb: 2 }}
+        InputProps={{ startAdornment: <LocationOnIcon sx={{ color: 'action.active', mr: 0.5 }} fontSize="small" /> }}
+      />
+
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        {filtered.length} חנויות
+      </Typography>
+
+      {/* List */}
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr', md: '1fr 1fr 1fr' }, gap: 2 }}>
+        {filtered.map(store => (
+          <Card key={store.id} variant="outlined">
+            <CardActionArea onClick={() => navigate(`/stores/${store.id}`)}>
+              <CardContent>
+                <Typography variant="subtitle1" fontWeight={600}>
+                  {store.store_name || store.chain_id}
+                </Typography>
+                {(store.city || store.address) && (
+                  <Typography variant="body2" color="text.secondary">
+                    {[store.city, store.address].filter(Boolean).join(' · ')}
+                  </Typography>
+                )}
+              </CardContent>
+            </CardActionArea>
+          </Card>
+        ))}
+      </Box>
     </Container>
   );
 };

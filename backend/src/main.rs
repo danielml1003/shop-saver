@@ -4,7 +4,7 @@ mod xml_processor;
 mod api;
 
 use anyhow::Result;
-use axum::http::{header, Method};
+use axum::http::Method;
 use std::{env, sync::Arc};
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
@@ -12,6 +12,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
+use tower_governor::{governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer};
 use tracing::{error, info, warn};
 
 use database::DatabaseManager;
@@ -34,8 +35,13 @@ async fn main() -> Result<()> {
         .parse::<u16>()
         .unwrap_or(3000);
 
-    let safe_db_url = database_url
-        .replace(&database_url[database_url.find("://").unwrap_or(0)+3..database_url.find("@").unwrap_or(database_url.len())], "://***:***@");
+    // Mask credentials (the part between "://" and "@", when both exist and are ordered)
+    let safe_db_url = match (database_url.find("://"), database_url.rfind('@')) {
+        (Some(scheme_end), Some(at)) if at > scheme_end + 3 => {
+            format!("{}***:***{}", &database_url[..scheme_end + 3], &database_url[at..])
+        }
+        _ => database_url.clone(),
+    };
     info!("📊 Database URL: {}", safe_db_url);
     info!("📁 Watch Directory: {}", watch_directory);
     info!("🌐 Server will run on port: {}", server_port);
@@ -68,17 +74,60 @@ async fn main() -> Result<()> {
         }
     });
 
-    let app = create_router(db_manager)
+    // CORS: restrict to CORS_ALLOWED_ORIGINS (comma-separated) when set;
+    // wide open otherwise (dev / same-origin nginx deployments).
+    let cors = match env::var("CORS_ALLOWED_ORIGINS") {
+        Ok(origins) if !origins.trim().is_empty() => {
+            let parsed: Vec<_> = origins
+                .split(',')
+                .filter_map(|o| o.trim().parse::<axum::http::HeaderValue>().ok())
+                .collect();
+            info!("🔒 CORS restricted to: {:?}", parsed);
+            CorsLayer::new()
+                .allow_origin(parsed)
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                .allow_headers(Any)
+        }
+        _ => CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+            .allow_headers(Any),
+    };
+
+    // Rate limiting (ARCHITECTURE.md §5.2): token bucket per client IP.
+    // RATE_LIMIT_RPS=0 disables (e.g. when nginx limit_req already fronts the API).
+    let rate_limit_rps: u64 = env::var("RATE_LIMIT_RPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    let rate_limit_burst: u32 = env::var("RATE_LIMIT_BURST")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20);
+
+    let mut app = create_router(db_manager)
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
-                .layer(
-                    CorsLayer::new()
-                        .allow_origin(Any)
-                        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-                        .allow_headers(Any)
-                )
+                .layer(cors)
         );
+
+    if rate_limit_rps > 0 {
+        // per_millisecond sets the token replenish interval: X req/s = one token every 1000/X ms.
+        // (tower_governor's per_second(n) would mean one token every n seconds.)
+        let governor_conf = Arc::new(
+            GovernorConfigBuilder::default()
+                .per_millisecond((1000 / rate_limit_rps).max(1))
+                .burst_size(rate_limit_burst)
+                .key_extractor(SmartIpKeyExtractor)
+                .finish()
+                .expect("invalid rate limit configuration"),
+        );
+        info!("🚦 Rate limit: {}/s per IP (burst {})", rate_limit_rps, rate_limit_burst);
+        app = app.layer(GovernorLayer { config: governor_conf });
+    } else {
+        info!("🚦 Rate limiting disabled (RATE_LIMIT_RPS=0)");
+    }
 
     let addr = format!("0.0.0.0:{}", server_port);
     let listener = TcpListener::bind(&addr).await?;
@@ -91,6 +140,7 @@ async fn main() -> Result<()> {
     info!("");
     info!("🛒 Shop Saver is ready to help you find the best prices!");
 
+    let app = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
     match axum::serve(listener, app).await {
         Ok(_) => info!("✅ Server shut down gracefully"),
         Err(e) => {

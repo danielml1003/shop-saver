@@ -2,7 +2,8 @@
 from .original import OriginalStoreDownloader
 import datetime
 
-fileType = ["StoresFull", "Price", "Promo", "PriceFull", "PromoFull"]
+# Promo/PromoFull intentionally excluded — the backend discards promo files (ARCHITECTURE.md §4.2).
+fileType = ["StoresFull", "Price", "PriceFull"]
 
 def _recent_timestamps():
     now = datetime.datetime.now()
