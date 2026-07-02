@@ -1,35 +1,42 @@
 import React, { createContext, useContext, useMemo, useState } from 'react';
-import { Item } from '../types';
+import { GroceryItem } from '../types';
 
 export interface CartContextValue {
-  items: Item[];
-  addItem: (item: Item) => void;
-  removeItem: (itemCode: string) => void;
+  items: GroceryItem[];
+  addItem: (item: GroceryItem) => void;
+  removeItem: (name: string) => void;
   clearCart: () => void;
-  contains: (itemCode: string) => boolean;
+  contains: (name: string) => boolean;
+  setItems: (items: GroceryItem[]) => void;
 }
 
 const CartContext = createContext<CartContextValue | undefined>(undefined);
 
 export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [items, setItems] = useState<Item[]>([]);
+  const [items, setItems] = useState<GroceryItem[]>([]);
 
-  const addItem = (item: Item) => {
+  const addItem = (item: GroceryItem) => {
     setItems(prev => {
-      if (prev.some(i => i.item_code === item.item_code)) return prev;
-      return [item, ...prev];
+      if (prev.some(i => i.name === item.name || (i.barcode && i.barcode === item.barcode))) {
+        return prev;
+      }
+      return [...prev, item];
     });
   };
 
-  const removeItem = (itemCode: string) => {
-    setItems(prev => prev.filter(i => i.item_code !== itemCode));
+  const removeItem = (name: string) => {
+    setItems(prev => prev.filter(i => i.name !== name));
   };
 
   const clearCart = () => setItems([]);
 
-  const contains = (itemCode: string) => items.some(i => i.item_code === itemCode);
+  const contains = (name: string) => items.some(i => i.name === name);
 
-  const value = useMemo<CartContextValue>(() => ({ items, addItem, removeItem, clearCart, contains }), [items]);
+  const value = useMemo<CartContextValue>(
+    () => ({ items, addItem, removeItem, clearCart, contains, setItems }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [items]
+  );
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
 };
@@ -39,5 +46,3 @@ export const useCart = (): CartContextValue => {
   if (!ctx) throw new Error('useCart must be used within a CartProvider');
   return ctx;
 };
-
-

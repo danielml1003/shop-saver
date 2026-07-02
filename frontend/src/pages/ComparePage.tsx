@@ -31,6 +31,7 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
 import { apiService } from '../services/api';
+import { useCart } from '../context/CartContext';
 import {
   GroceryItem,
   PriceComparisonRequest,
@@ -68,13 +69,15 @@ function decodeList(encoded: string): GroceryItem[] | null {
 // Component
 // ---------------------------------------------------------------------------
 const ComparePage: React.FC = () => {
-  // --- grocery bag state ---
+  // --- grocery bag state (shared app-wide via CartContext) ---
   const [inputItem, setInputItem] = useState('');
   const [suggestions, setSuggestions] = useState<ProductSearchResult[]>([]);
-  const [items, setItems] = useState<GroceryItem[]>([]);
+  const { items, addItem: cartAddItem, removeItem: cartRemoveItem, setItems } = useCart();
 
   // --- location (optional) ---
   const [location, setLocation] = useState<UserLocation | null>(null);
+  const [city, setCity] = useState('');
+  const [gpsStatus, setGpsStatus] = useState<'idle' | 'active' | 'denied'>('idle');
 
   // --- results state ---
   const [results, setResults] = useState<StoreComparison[]>([]);
@@ -127,6 +130,19 @@ const ComparePage: React.FC = () => {
     if (typeof BarcodeDetector !== 'undefined') {
       setScannerSupported(true);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Auto-detect GPS on mount — falls back to the city text input when denied
+  useEffect(() => {
+    if (!navigator.geolocation) { setGpsStatus('denied'); return; }
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        setLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, radius_km: 10 });
+        setGpsStatus('active');
+      },
+      () => setGpsStatus('denied')
+    );
   }, []);
 
   // ---------------------------------------------------------------------------
@@ -152,12 +168,12 @@ const ComparePage: React.FC = () => {
     if (!grocery.name || items.some(i =>
       (i.barcode && i.barcode === grocery.barcode) || i.name === grocery.name
     )) return;
-    setItems(prev => [...prev, grocery]);
+    cartAddItem(grocery);
     setInputItem('');
     setSuggestions([]);
   };
 
-  const removeItem = (name: string) => setItems(prev => prev.filter(i => i.name !== name));
+  const removeItem = (name: string) => cartRemoveItem(name);
 
   // Resolve a grocery list term (may be a barcode) back to a display name.
   const resolveTermName = (term: string): string => {
@@ -255,9 +271,13 @@ const ComparePage: React.FC = () => {
   // ---------------------------------------------------------------------------
   const useGeolocation = () => {
     if (!navigator.geolocation) return;
-    navigator.geolocation.getCurrentPosition(pos => {
-      setLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, radius_km: 10 });
-    });
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        setLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, radius_km: 10 });
+        setGpsStatus('active');
+      },
+      () => setGpsStatus('denied')
+    );
   };
 
   // ---------------------------------------------------------------------------
@@ -276,6 +296,7 @@ const ComparePage: React.FC = () => {
         page,
         page_size: PAGE_SIZE,
         ...(location ? { user_location: location } : {}),
+        ...(!location && city.trim() ? { city: city.trim() } : {}),
       };
       const data: PriceComparisonResponse = await apiService.comparePrices(payload);
 
@@ -296,7 +317,7 @@ const ComparePage: React.FC = () => {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [location]);
+  }, [location, city]);
 
   const runSearch = () => {
     setResults([]);
@@ -472,17 +493,37 @@ const ComparePage: React.FC = () => {
           {loading ? 'מחפש...' : 'השווה מחירים'}
         </Button>
 
-        <Button
-          variant="outlined"
-          size="small"
-          onClick={useGeolocation}
-          startIcon={<LocationOnIcon />}
-          color={location ? 'success' : 'inherit'}
-        >
-          {location ? 'מיקום נבחר' : 'המיקום שלי (אופציונלי)'}
-        </Button>
-        {location && (
-          <Button size="small" color="inherit" onClick={() => setLocation(null)}>הסר מיקום</Button>
+        {gpsStatus === 'active' && location ? (
+          <Chip
+            icon={<LocationOnIcon />}
+            label={`GPS פעיל · ${location.radius_km ?? 10} ק"מ`}
+            color="success"
+            variant="outlined"
+            onDelete={() => { setLocation(null); setGpsStatus('denied'); }}
+          />
+        ) : (
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+            <TextField
+              label="עיר (אופציונלי)"
+              size="small"
+              value={city}
+              onChange={e => setCity(e.target.value)}
+              placeholder="לדוגמה: תל אביב"
+              sx={{ width: 180 }}
+              InputProps={{
+                startAdornment: <LocationOnIcon sx={{ color: 'action.active', mr: 0.5 }} fontSize="small" />,
+              }}
+            />
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={useGeolocation}
+              startIcon={<LocationOnIcon />}
+              color="inherit"
+            >
+              המיקום שלי
+            </Button>
+          </Box>
         )}
 
         {items.length > 0 && (

@@ -5,6 +5,7 @@ import { CssBaseline, Box } from '@mui/material';
 import Header from './components/Header';
 import ItemsPage from './pages/ItemsPage';
 import StoresPage from './pages/StoresPage';
+import StoreDetailPage from './pages/StoreDetailPage';
 import ComparePage from './pages/ComparePage';
 import CartPage from './pages/CartPage';
 import { CartProvider } from './context/CartContext';
@@ -58,6 +59,7 @@ function App() {
                 <Route path="/" element={<ComparePage />} />
                 <Route path="/items" element={<ItemsPage />} />
                 <Route path="/stores" element={<StoresPage />} />
+                <Route path="/stores/:id" element={<StoreDetailPage />} />
                 <Route path="/compare" element={<ComparePage />} />
                 <Route path="/cart" element={<CartPage />} />
               </Routes>
