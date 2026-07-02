@@ -12,6 +12,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
+use tower_governor::{governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer};
 use tracing::{error, info, warn};
 
 use database::DatabaseManager;
@@ -93,12 +94,40 @@ async fn main() -> Result<()> {
             .allow_headers(Any),
     };
 
-    let app = create_router(db_manager)
+    // Rate limiting (ARCHITECTURE.md §5.2): token bucket per client IP.
+    // RATE_LIMIT_RPS=0 disables (e.g. when nginx limit_req already fronts the API).
+    let rate_limit_rps: u64 = env::var("RATE_LIMIT_RPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    let rate_limit_burst: u32 = env::var("RATE_LIMIT_BURST")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20);
+
+    let mut app = create_router(db_manager)
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
                 .layer(cors)
         );
+
+    if rate_limit_rps > 0 {
+        // per_millisecond sets the token replenish interval: X req/s = one token every 1000/X ms.
+        // (tower_governor's per_second(n) would mean one token every n seconds.)
+        let governor_conf = Arc::new(
+            GovernorConfigBuilder::default()
+                .per_millisecond((1000 / rate_limit_rps).max(1))
+                .burst_size(rate_limit_burst)
+                .key_extractor(SmartIpKeyExtractor)
+                .finish()
+                .expect("invalid rate limit configuration"),
+        );
+        info!("🚦 Rate limit: {}/s per IP (burst {})", rate_limit_rps, rate_limit_burst);
+        app = app.layer(GovernorLayer { config: governor_conf });
+    } else {
+        info!("🚦 Rate limiting disabled (RATE_LIMIT_RPS=0)");
+    }
 
     let addr = format!("0.0.0.0:{}", server_port);
     let listener = TcpListener::bind(&addr).await?;
@@ -111,6 +140,7 @@ async fn main() -> Result<()> {
     info!("");
     info!("🛒 Shop Saver is ready to help you find the best prices!");
 
+    let app = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
     match axum::serve(listener, app).await {
         Ok(_) => info!("✅ Server shut down gracefully"),
         Err(e) => {
