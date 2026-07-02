@@ -1,7 +1,7 @@
 use sqlx::{PgPool, Executor, Row};
 use crate::models::{PriceComparisonRequest, PriceComparisonResponse, StoreInfo, ItemPrice, StoreComparison, StoreRecord, ProductSearchResult, StoreItemRow};
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Returns true if `code` is a valid EAN-13 barcode (13 digits + correct check digit).
 pub fn is_ean13(code: &str) -> bool {
@@ -376,73 +376,96 @@ impl DatabaseManager {
         Ok((items, total as usize))
     }
 
-    // Returns stores that carry at least one of the requested items, ordered by coverage.
-    // Handles barcodes (exact match) and name terms (LIKE) separately so each can use its index.
-    pub async fn get_stores_with_items(
+    /// Returns stores that carry at least one of the requested items, ordered by how many
+    /// list terms they cover (then store id). `candidate_ids` optionally restricts the
+    /// search to a pre-filtered set (nearby / city stores).
+    ///
+    /// One set-based query computes coverage for the whole grocery list: barcodes match
+    /// `item_code = ANY(..)`, name terms match via `unnest`-joined LIKE patterns — no
+    /// per-term round trips (ARCHITECTURE.md §3.2).
+    async fn rank_stores_by_coverage(
         &self,
         grocery_list: &[String],
+        candidate_ids: Option<&[i32]>,
         page: usize,
         page_size: usize,
     ) -> Result<(Vec<StoreInfo>, usize)> {
         if grocery_list.is_empty() {
             return Ok((vec![], 0));
         }
+        if matches!(candidate_ids, Some(ids) if ids.is_empty()) {
+            return Ok((vec![], 0));
+        }
 
         let (barcodes, name_terms): (Vec<&String>, Vec<&String>) = grocery_list
             .iter()
             .partition(|s| is_ean13(s));
-
-        let mut term_store_sets: Vec<HashSet<i32>> = Vec::new();
-
-        // Barcode terms — exact item_code lookup
-        for barcode in &barcodes {
-            let store_ids: Vec<i32> = sqlx::query_scalar(
-                "SELECT DISTINCT store_pk FROM items WHERE item_code = $1"
-            )
-            .bind(barcode.as_str())
-            .fetch_all(&self.pool)
-            .await?;
-            term_store_sets.push(store_ids.into_iter().collect());
-        }
-
-        // Name terms — LIKE via trigram index
-        for term in &name_terms {
-            let pattern = format!("%{}%", term.to_lowercase());
-            let store_ids: Vec<i32> = sqlx::query_scalar(
-                "SELECT DISTINCT store_pk FROM items WHERE LOWER(item_name) LIKE $1"
-            )
-            .bind(&pattern)
-            .fetch_all(&self.pool)
-            .await?;
-            term_store_sets.push(store_ids.into_iter().collect());
-        }
-
-        let all_ids: HashSet<i32> = term_store_sets.iter()
-            .flat_map(|s| s.iter().cloned())
+        let barcode_vals: Vec<String> = barcodes.iter().map(|s| s.to_string()).collect();
+        let patterns: Vec<String> = name_terms.iter()
+            .map(|t| format!("%{}%", t.to_lowercase()))
             .collect();
+        let candidates: Option<Vec<i32>> = candidate_ids.map(|ids| ids.to_vec());
 
-        let mut coverage: Vec<(i32, usize)> = all_ids.iter().map(|&sid| {
-            let count = term_store_sets.iter().filter(|s| s.contains(&sid)).count();
-            (sid, count)
-        }).collect();
-        coverage.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let rows = sqlx::query(
+            "WITH matched AS ( \
+                SELECT DISTINCT store_pk, 'b:' || item_code AS term_key \
+                FROM items \
+                WHERE item_code = ANY($1) \
+                  AND ($3::int4[] IS NULL OR store_pk = ANY($3)) \
+                UNION \
+                SELECT DISTINCT i.store_pk, 'n:' || p.pattern AS term_key \
+                FROM items i \
+                JOIN unnest($2::text[]) AS p(pattern) \
+                  ON LOWER(i.item_name) LIKE p.pattern \
+                WHERE ($3::int4[] IS NULL OR i.store_pk = ANY($3)) \
+             ) \
+             SELECT store_pk, COUNT(*) AS coverage, COUNT(*) OVER () AS total_stores \
+             FROM matched \
+             GROUP BY store_pk \
+             ORDER BY coverage DESC, store_pk ASC \
+             LIMIT $4 OFFSET $5"
+        )
+        .bind(&barcode_vals)
+        .bind(&patterns)
+        .bind(&candidates)
+        .bind(page_size as i64)
+        .bind(((page - 1) * page_size) as i64)
+        .fetch_all(&self.pool)
+        .await?;
 
-        let total = all_ids.len();
-        let offset = (page - 1) * page_size;
-        let page_ids: Vec<i32> = coverage.into_iter()
-            .skip(offset)
-            .take(page_size)
-            .map(|(id, _)| id)
-            .collect();
+        let total = rows.first()
+            .map(|r| r.get::<i64, _>("total_stores") as usize)
+            .unwrap_or(0);
+        let page_ids: Vec<i32> = rows.iter().map(|r| r.get("store_pk")).collect();
 
         if page_ids.is_empty() {
-            return Ok((vec![], total));
+            // Past the last page: recount so has_more stays correct.
+            let total: i64 = sqlx::query_scalar(
+                "WITH matched AS ( \
+                    SELECT DISTINCT store_pk FROM items \
+                    WHERE item_code = ANY($1) \
+                      AND ($3::int4[] IS NULL OR store_pk = ANY($3)) \
+                    UNION \
+                    SELECT DISTINCT i.store_pk \
+                    FROM items i \
+                    JOIN unnest($2::text[]) AS p(pattern) \
+                      ON LOWER(i.item_name) LIKE p.pattern \
+                    WHERE ($3::int4[] IS NULL OR i.store_pk = ANY($3)) \
+                 ) SELECT COUNT(*) FROM matched"
+            )
+            .bind(&barcode_vals)
+            .bind(&patterns)
+            .bind(&candidates)
+            .fetch_one(&self.pool)
+            .await?;
+            return Ok((vec![], total as usize));
         }
 
         let rows = sqlx::query(
             "SELECT s.id, s.chain_id, s.sub_chain_id, s.store_id, \
                     COALESCE(s.store_name, cn.display_name) as store_name, \
-                    s.address, s.city \
+                    s.address, s.city, \
+                    s.latitude::float8 as latitude, s.longitude::float8 as longitude \
              FROM stores s \
              LEFT JOIN chain_names cn ON s.chain_id = cn.chain_id \
              WHERE s.id = ANY($1)"
@@ -461,8 +484,8 @@ impl DatabaseManager {
                 store_name: row.get("store_name"),
                 address: row.get("address"),
                 city: row.get("city"),
-                latitude: None,
-                longitude: None,
+                latitude: row.get("latitude"),
+                longitude: row.get("longitude"),
                 distance_km: None,
             })
         }).collect();
@@ -472,6 +495,16 @@ impl DatabaseManager {
             .collect();
 
         Ok((stores, total))
+    }
+
+    // Returns stores that carry at least one of the requested items, ordered by coverage.
+    pub async fn get_stores_with_items(
+        &self,
+        grocery_list: &[String],
+        page: usize,
+        page_size: usize,
+    ) -> Result<(Vec<StoreInfo>, usize)> {
+        self.rank_stores_by_coverage(grocery_list, None, page, page_size).await
     }
 
     /// Search for items matching `query`. Returns results with a barcode when the item is a
@@ -619,93 +652,7 @@ impl DatabaseManager {
         page: usize,
         page_size: usize,
     ) -> Result<(Vec<StoreInfo>, usize)> {
-        if grocery_list.is_empty() || candidate_ids.is_empty() {
-            return Ok((vec![], 0));
-        }
-
-        let (barcodes, name_terms): (Vec<&String>, Vec<&String>) =
-            grocery_list.iter().partition(|s| is_ean13(s));
-
-        let mut term_store_sets: Vec<HashSet<i32>> = Vec::new();
-
-        for barcode in &barcodes {
-            let ids: Vec<i32> = sqlx::query_scalar(
-                "SELECT DISTINCT store_pk FROM items \
-                 WHERE item_code = $1 AND store_pk = ANY($2)"
-            )
-            .bind(barcode.as_str())
-            .bind(candidate_ids)
-            .fetch_all(&self.pool)
-            .await?;
-            term_store_sets.push(ids.into_iter().collect());
-        }
-
-        for term in &name_terms {
-            let pattern = format!("%{}%", term.to_lowercase());
-            let ids: Vec<i32> = sqlx::query_scalar(
-                "SELECT DISTINCT store_pk FROM items \
-                 WHERE LOWER(item_name) LIKE $1 AND store_pk = ANY($2)"
-            )
-            .bind(&pattern)
-            .bind(candidate_ids)
-            .fetch_all(&self.pool)
-            .await?;
-            term_store_sets.push(ids.into_iter().collect());
-        }
-
-        let all_ids: HashSet<i32> = term_store_sets.iter()
-            .flat_map(|s| s.iter().cloned())
-            .collect();
-
-        let mut coverage: Vec<(i32, usize)> = all_ids.iter().map(|&sid| {
-            let count = term_store_sets.iter().filter(|s| s.contains(&sid)).count();
-            (sid, count)
-        }).collect();
-        coverage.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-
-        let total = all_ids.len();
-        let offset = (page - 1) * page_size;
-        let page_ids: Vec<i32> = coverage.into_iter()
-            .skip(offset).take(page_size).map(|(id, _)| id).collect();
-
-        if page_ids.is_empty() {
-            return Ok((vec![], total));
-        }
-
-        let rows = sqlx::query(
-            "SELECT s.id, s.chain_id, s.sub_chain_id, s.store_id, \
-                    COALESCE(s.store_name, cn.display_name) as store_name, \
-                    s.address, s.city, \
-                    s.latitude::float8 as latitude, s.longitude::float8 as longitude \
-             FROM stores s \
-             LEFT JOIN chain_names cn ON s.chain_id = cn.chain_id \
-             WHERE s.id = ANY($1)"
-        )
-        .bind(&page_ids)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut id_to_store: HashMap<i32, StoreInfo> = rows.into_iter().map(|row| {
-            let id: i32 = row.get("id");
-            (id, StoreInfo {
-                id,
-                chain_id: row.get("chain_id"),
-                sub_chain_id: row.get("sub_chain_id"),
-                store_id: row.get("store_id"),
-                store_name: row.get("store_name"),
-                address: row.get("address"),
-                city: row.get("city"),
-                latitude: row.get("latitude"),
-                longitude: row.get("longitude"),
-                distance_km: None,
-            })
-        }).collect();
-
-        let stores: Vec<StoreInfo> = page_ids.iter()
-            .filter_map(|id| id_to_store.remove(id))
-            .collect();
-
-        Ok((stores, total))
+        self.rank_stores_by_coverage(grocery_list, Some(candidate_ids), page, page_size).await
     }
 
     pub async fn compare_prices(&self, request: PriceComparisonRequest) -> Result<PriceComparisonResponse> {
